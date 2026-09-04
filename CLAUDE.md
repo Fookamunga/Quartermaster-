@@ -86,12 +86,17 @@ queries. Only staples-host touches this volume.
   ✅ Stocked
   - <item> — last bought <N> days ago (usually every ~<interval> days)
 
+  ❔ Never tracked
+  - <item> — no purchase on record yet (usually every ~<interval> days)
+
   ❔ Not enough data yet
   - <item> — no interval learned yet
   ```
-  Items with no learned/seeded interval get their own quiet section rather than
-  being lumped into "Stocked," consistent with the replenishment logic's existing
-  goal of avoiding noise during the learning phase.
+  Items seeded via `set_interval` with no `last_purchased` anchor (`status: due`
+  but no real date to compute from) get their own **"❔ Never tracked"** section —
+  kept visually separate from genuinely-computed "Due soon"/"Overdue" items, not
+  folded into either. Distinct from **"❔ Not enough data yet"**, which is for items
+  with no interval at all (neither seeded nor learned).
 
   Confirm Craft's write API/token scope before implementing — the existing
   `CRAFT_API_TOKEN` may need broader permissions than the read-only pull required.
@@ -144,6 +149,12 @@ Keep only what a cold, one-shot-per-message architecture needs:
   period" (which would corrupt the replenishment-interval data). Confirm the
   `npm run login -- --server <url>` re-auth flow still works unchanged post-rebuild
   before assuming the alert text is still accurate.
+- **"Never tracked" item alerting.** A separate, standing Discord message/alert for
+  items that are seeded (via `set_interval`) but have no `last_purchased` anchor —
+  same underlying data as the Craft doc's "❔ Never tracked" section, but as its own
+  distinct Discord post, not folded into any other alert. Call staples-host's
+  `list_staples()` (or equivalent), filter for no-anchor seeded items, and post
+  them separately. Not buildable until this phase starts.
 
 **Drop:**
 - Any warm/streaming session code path — nothing should keep a Claude session
