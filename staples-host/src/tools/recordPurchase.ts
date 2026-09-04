@@ -3,11 +3,7 @@ import { z } from "zod";
 import { findBestItemMatch } from "../fuzzy.js";
 import { recomputeItemSummary } from "../replenishment.js";
 import { newEventId, withDb } from "../storage.js";
-import { toolError, toolJson } from "./shared.js";
-
-const isoDate = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD");
+import { isoDate, toolError, toolJson } from "./shared.js";
 
 export function registerRecordPurchase(server: McpServer): void {
   server.registerTool(

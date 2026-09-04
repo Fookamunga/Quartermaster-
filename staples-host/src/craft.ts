@@ -24,22 +24,32 @@ export class CraftNotConfiguredError extends Error {
   }
 }
 
-async function craftGet(pathAndQuery: string): Promise<unknown> {
+async function craftRequest(
+  method: string,
+  pathAndQuery: string,
+  body?: unknown,
+): Promise<unknown> {
   if (!CRAFT_CONNECT_URL || !CRAFT_API_TOKEN) throw new CraftNotConfiguredError();
   const url = `${CRAFT_CONNECT_URL}${pathAndQuery}`;
   const res = await fetch(url, {
+    method,
     headers: {
       Accept: "application/json",
       Authorization: `Bearer ${CRAFT_API_TOKEN}`,
+      ...(body ? { "Content-Type": "application/json" } : {}),
     },
+    body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
+    const detail = await res.text().catch(() => "");
     throw new Error(
-      `Craft API request failed: ${res.status} ${res.statusText} (${url})`,
+      `Craft API request failed: ${res.status} ${res.statusText} (${url})${detail ? ` — ${detail}` : ""}`,
     );
   }
   return res.json();
 }
+
+const craftGet = (pathAndQuery: string) => craftRequest("GET", pathAndQuery);
 
 export async function listCraftDocuments(): Promise<
   { id: string; title: string }[]
@@ -54,6 +64,39 @@ export async function fetchCraftDocument(docId: string): Promise<CraftBlock> {
   return (await craftGet(
     `/blocks?id=${encodeURIComponent(docId)}&maxDepth=-1`,
   )) as CraftBlock;
+}
+
+/**
+ * Replace a page's direct child blocks wholesale: delete every existing
+ * top-level block, then create one plain text block per line (empty strings
+ * become blank blocks, used as visual spacing). No diff/merge — callers own
+ * that decision (push_status_to_craft treats this doc as bot-owned).
+ *
+ * Request/response shapes below aren't in Craft's published docs (that site
+ * is a JS SPA my fetch tools can't render) — reverse-engineered from the
+ * live API's Zod validation error messages during development:
+ *   POST /blocks?id=<pageId>   { blocks: [{type:"text", markdown}], position: {position:"end", pageId} }
+ *   DELETE /blocks?id=<pageId> { blockIds: [...] }
+ */
+export async function replaceDocumentBlocks(
+  docId: string,
+  lines: string[],
+): Promise<void> {
+  const current = await fetchCraftDocument(docId);
+  const existingIds = (current.content ?? []).map((b) => b.id);
+
+  if (existingIds.length > 0) {
+    await craftRequest("DELETE", `/blocks?id=${encodeURIComponent(docId)}`, {
+      blockIds: existingIds,
+    });
+  }
+
+  if (lines.length === 0) return;
+
+  await craftRequest("POST", `/blocks?id=${encodeURIComponent(docId)}`, {
+    blocks: lines.map((markdown) => ({ type: "text", markdown })),
+    position: { position: "end", pageId: docId },
+  });
 }
 
 /**

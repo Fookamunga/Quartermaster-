@@ -4,9 +4,9 @@ MCP server owning the grocery staples list, purchase-event log, and Craft sync f
 Quartermaster. See the repo root [CLAUDE.md](../CLAUDE.md) for the full architecture
 and [DEPLOYMENT.md](../DEPLOYMENT.md) for the NAS deploy target.
 
-Exposes 7 MCP tools over Streamable HTTP: `list_staples`, `get_item`,
+Exposes 8 MCP tools over Streamable HTTP: `list_staples`, `get_item`,
 `record_purchase`, `set_interval`, `sync_from_craft`, `filter_staples`,
-`ingest_receipt`.
+`ingest_receipt`, `push_status_to_craft`.
 
 ## Running locally
 
@@ -44,7 +44,8 @@ loaded if present). See `.env.example` for the full list with comments:
 | `ALLOWED_HOSTS` | no | Comma-separated hostnames for DNS-rebinding protection. Set to the Tailscale Funnel hostname in production. |
 | `CRAFT_CONNECT_URL` | for `sync_from_craft` | Craft Connect share link, from Craft: Settings → Connect/API. Scopes which documents are visible. |
 | `CRAFT_STAPLES_DOC_ID` | for `sync_from_craft` | Document ID of the Staples list within that share. Find it via `GET ${CRAFT_CONNECT_URL}/documents`. |
-| `CRAFT_API_TOKEN` | for `sync_from_craft` | Craft personal API token, sent as `Authorization: Bearer <token>`. The Connect link alone is **not** sufficient — both are needed. |
+| `CRAFT_API_TOKEN` | for `sync_from_craft`, `push_status_to_craft` | Craft personal API token, sent as `Authorization: Bearer <token>`. The Connect link alone is **not** sufficient — both are needed. This same token covers writes too (confirmed during development — no separate write-scoped token was needed). |
+| `CRAFT_STATUS_DOC_ID` | for `push_status_to_craft` | Document ID of the separate "Staples Status" doc. Must already exist — create it manually in Craft first; this server never creates docs. |
 | `ANTHROPIC_API_KEY` | for `ingest_receipt` | Used for one-shot Claude vision extraction of receipt photos — a single Messages API call, not an Agent SDK session (see the non-negotiable constraint in CLAUDE.md). |
 | `RECEIPT_VISION_MODEL` | no (default `claude-sonnet-5`) | Model used for receipt extraction. |
 
@@ -70,9 +71,21 @@ reconciliation ever needs real queries (per CLAUDE.md) — not needed yet.
   overrides any earlier manual `set_interval` value once there's enough real data.
 - Items with no interval (not enough data yet) never surface as due.
 - `due` vs `overdue` split: `due` once days-since-purchase ≥ interval, `overdue`
-  once it's ≥ `1.5×` interval. That multiplier isn't specified anywhere in the
-  brief — it's a tunable constant (`OVERDUE_MULTIPLIER` in `src/config.ts`), not a
-  hard requirement.
+  once it's ≥ `1.5×` interval (`OVERDUE_MULTIPLIER` in `src/config.ts`, confirmed
+  against CLAUDE.md).
+- **Exception — `set_interval`'s anchor date.** The 2+ event gate above only
+  applies to the organic, purchase-event-driven path
+  (`recomputeItemSummary`/`computeStatus`). `set_interval(item_name, days,
+  last_purchased?)` computes status straight from (interval, last_purchased) via
+  `computeStatusFromAnchor`, no event count involved:
+  - `last_purchased` given → due/overdue math runs immediately, same as a
+    learned item. `last_purchased_source` becomes `manual_seed`; a real
+    purchase recorded afterward overwrites it as usual.
+  - `last_purchased` omitted and the item has no existing anchor → `status:
+    "due"` right away rather than `not_due`/"not enough data" — a seeded
+    interval with nothing to anchor it shouldn't sit silent.
+  - `last_purchased` omitted but a real anchor already exists (from prior
+    purchase events) → that existing date is used.
 
 ## Craft sync
 
@@ -89,6 +102,47 @@ Craft no longer lists. CLAUDE.md's requirement is only that purchase history is
 never dropped; full two-way reconciliation (removing items that vanished from
 Craft) wasn't implemented since it risks discarding data on a false-negative
 parse, and wasn't asked for.
+
+## push_status_to_craft
+
+Writes current status to a **separate, bot-owned** "Staples Status" Craft doc
+(never the source doc `sync_from_craft` reads from — that'd create a pull/push
+loop). Wholesale overwrite every call: delete every existing top-level block in
+the doc, then write fresh ones — no diff/merge, since the doc is never meant to
+be hand-edited. Verified idempotent (repeated pushes produce the same block
+count, no accumulation).
+
+Items are grouped by urgency (Overdue / Due soon / Stocked / Never tracked /
+Not enough data yet) per CLAUDE.md's exact template, sorted alphabetically
+within each group. Empty groups are omitted entirely rather than shown with no
+items under them — not specified in the brief, chosen for a cleaner
+at-a-glance read (confirmed against CLAUDE.md as the intended behavior).
+
+Grouping logic, in order:
+1. `replenishment_interval_days == null` → **Not enough data yet** (no
+   interval at all, neither seeded nor learned).
+2. Interval set but `last_purchased == null` → **Never tracked** — a
+   `set_interval`-seeded item with no anchor date. `computeStatusFromAnchor`
+   already resolves this to `status: "due"`, but it's kept visually separate
+   from genuinely-computed "Due soon"/"Overdue" items since there's no real
+   purchase date behind it. Line format:
+   `- <item> — no purchase on record yet (usually every ~<interval> days)`.
+3. Otherwise, `item.status` decides Overdue / Due soon / Stocked directly,
+   with the normal line format:
+   `- <item> — last bought <N> days ago (usually every ~<interval> days)`.
+
+See the Replenishment logic section above for how `status` gets set.
+
+**Craft's write API isn't in the public docs** (the docs site is a client-side
+app my fetch tools can't render) — the request/response shapes below were
+reverse-engineered from the live API's Zod validation error messages:
+
+- Create blocks: `POST {CRAFT_CONNECT_URL}/blocks?id=<pageId>` with body
+  `{"blocks": [{"type": "text", "markdown": "..."}], "position": {"position": "end", "pageId": "<pageId>"}}`
+- Delete blocks: `DELETE {CRAFT_CONNECT_URL}/blocks?id=<pageId>` with body
+  `{"blockIds": ["...", "..."]}`
+- The existing read-scoped `CRAFT_API_TOKEN` already covers both — no separate
+  write token or elevated scope was needed when this was tested.
 
 ## ingest_receipt
 

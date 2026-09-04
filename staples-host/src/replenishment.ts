@@ -7,6 +7,10 @@ function daysBetween(earlier: string, later: string): number {
   return Math.round((Date.parse(later) - Date.parse(earlier)) / MS_PER_DAY);
 }
 
+export function daysSince(dateIso: string): number {
+  return daysBetween(dateIso, todayIso());
+}
+
 /**
  * Median gap (in days) between consecutive purchases, sorted oldest to
  * newest. Median rather than mean so one early/late outlier purchase
@@ -26,27 +30,39 @@ export function medianIntervalDays(sortedDates: string[]): number | null {
 }
 
 /**
+ * Pure due/overdue math from an interval + anchor date, no event count
+ * involved. No interval -> never due. Interval set but no anchor date at
+ * all -> due immediately (a seeded item with nothing to anchor it should
+ * surface, not sit silent as "not enough data" — see CLAUDE.md's
+ * set_interval exception). Otherwise the normal threshold math.
+ */
+export function computeStatusFromAnchor(
+  intervalDays: number | null,
+  lastPurchased: string | null,
+): ItemStatus {
+  if (intervalDays == null) return "not_due";
+  if (!lastPurchased) return "due";
+
+  const days = daysSince(lastPurchased);
+  if (days >= intervalDays * OVERDUE_MULTIPLIER) return "overdue";
+  if (days >= intervalDays) return "due";
+  return "not_due";
+}
+
+/**
  * Status is only ever evaluated once an item has at least 2 purchase
  * events — below that there's no purchase history to anchor a due date
- * against, so it always reads not_due. Items with no interval (not enough
- * data yet, or never set) never surface as due either.
+ * against, so it always reads not_due. This gate applies only to the
+ * organic, purchase-event-driven path (recomputeItemSummary below);
+ * set_interval's manually-seeded anchor bypasses it entirely and calls
+ * computeStatusFromAnchor directly — see CLAUDE.md.
  */
 export function computeStatus(
   item: Pick<Item, "replenishment_interval_days" | "last_purchased">,
   eventCountForItem: number,
 ): ItemStatus {
   if (eventCountForItem < 2) return "not_due";
-  if (item.replenishment_interval_days == null) return "not_due";
-  if (!item.last_purchased) return "not_due";
-
-  const daysSince = daysBetween(item.last_purchased, todayIso());
-  if (daysSince >= item.replenishment_interval_days * OVERDUE_MULTIPLIER) {
-    return "overdue";
-  }
-  if (daysSince >= item.replenishment_interval_days) {
-    return "due";
-  }
-  return "not_due";
+  return computeStatusFromAnchor(item.replenishment_interval_days, item.last_purchased);
 }
 
 export function todayIso(): string {

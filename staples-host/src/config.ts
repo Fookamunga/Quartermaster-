@@ -35,6 +35,11 @@ export const CRAFT_CONNECT_URL = process.env.CRAFT_CONNECT_URL ?? null;
 export const CRAFT_STAPLES_DOC_ID = process.env.CRAFT_STAPLES_DOC_ID ?? null;
 export const CRAFT_API_TOKEN = process.env.CRAFT_API_TOKEN ?? null;
 
+// Separate, bot-owned doc that push_status_to_craft() overwrites wholesale.
+// Never read by sync_from_craft() — see README for why that'd be a pull/push
+// loop. Created manually by the user; this server never creates it.
+export const CRAFT_STATUS_DOC_ID = process.env.CRAFT_STATUS_DOC_ID ?? null;
+
 // Used by ingest_receipt for one-shot vision extraction of receipt line
 // items via the Anthropic Messages API — a single stateless API call, not
 // an Agent SDK session, so it doesn't touch the warm-session constraint in
