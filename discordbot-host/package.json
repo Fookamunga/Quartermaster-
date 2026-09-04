@@ -1,0 +1,23 @@
+{
+  "name": "discordbot-host",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Persistent Discord gateway that spins up cold, one-shot Claude Code invocations per message for #woolworths-ordering and #order-import.",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "discord.js": "^14.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
+  }
+}
