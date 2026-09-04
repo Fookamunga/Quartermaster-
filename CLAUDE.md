@@ -90,6 +90,20 @@ Keep only what a cold, one-shot-per-message architecture needs:
 - Session-ID resumption for conversation continuity across separate cold calls
   (save session ID, pass `--resume <id>` next time) — new addition, not in the old
   code, build it in from the start.
+- **Woolworths auth-failure alerting.** The existing bot (posting under the
+  Discord identity "Claude_BotAPP") already detects when woolies-mcp's Woolworths
+  session has died and posts an alert instructing manual re-login, e.g.:
+  `Woolworths session is dead. Fix it from your PC: npm run login -- --server
+  <woolies-mcp Funnel URL>`. This is host-side detection/alerting logic, not
+  something woolies-mcp does itself — woolies-mcp just fails normally (an
+  auth-failure response) when its session is dead. Preserve this behavior in the
+  rebuild: discordbot-host should distinguish "woolies-mcp says auth failed" from
+  other failure modes and post this same kind of alert. Also applies to
+  staples-host's order-history sync calls to woolies-mcp — an auth failure there
+  must be surfaced the same way, not silently treated as "no orders in this
+  period" (which would corrupt the replenishment-interval data). Confirm the
+  `npm run login -- --server <url>` re-auth flow still works unchanged post-rebuild
+  before assuming the alert text is still accurate.
 
 **Drop:**
 - Any warm/streaming session code path — nothing should keep a Claude session
