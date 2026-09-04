@@ -117,44 +117,133 @@ same item within ~±2 days, merge, treat API as authoritative when both exist.
 Unmatched API events fill gaps, not duplicates.
 
 ### 3. discordbot-host (rebuild — replaces nanoclaw-host)
-Keep only what a cold, one-shot-per-message architecture needs:
+Keep only what a cold, one-shot-per-message architecture needs. This is now a
+fresh build against a real, already-deployed staples-host, not a plan against
+a hypothetical one — reference the old nanoclaw-discord code only where the
+Keep list below says to; don't patch it.
+
+**Trigger — channel-scoped, not keyword-based.** Any message in either of two
+existing Discord channels triggers a cold invocation automatically — no
+`!nano`-style prefix. Both channels already exist; discordbot-host only ever
+references them by name (resolved to channel IDs at startup by searching the
+guild's channels), never creates either.
+
+- **`#woolworths-ordering`** — the single home for **all** action-oriented
+  output: user shopping requests, staples-host due/overdue nudges, the
+  auth-failure alert, and the "Never tracked" alert all post here, since
+  acting on any of them routes through woolies-mcp. Cold sessions here get
+  both woolies-mcp and staples-host in their MCP config.
+- **`#order-import`** — manual backfill of *past* orders into staples-host's
+  purchase history. Distinct from `ingest_receipt`'s existing photo path
+  (still used here for photos, just not the only input) and from the future
+  automatic order-history API sync (not yet implemented) — this is a third,
+  human-driven way historical purchases get recorded, for orders neither of
+  those paths already covers. Pure data entry, not a cart action: messages/
+  photos posted here route straight to staples-host's `record_purchase`
+  (text) or `ingest_receipt` (photos) and execute immediately — **no**
+  propose/confirm flow, no ✅/❌ reaction. Cold sessions here get only
+  staples-host in their MCP config; woolies-mcp isn't needed and isn't
+  passed in. Its own workspace `CLAUDE.md` (separate from
+  `#woolworths-ordering`'s) instructs the agent on this specific job:
+  - **Two pasted-text formats to handle**, plus photos via `ingest_receipt`:
+    1. A full order confirmation with a
+       `Order Confirmation/Invoice Number <ID> <DD Mon, YYYY>` header line —
+       extract the date from that header; don't ask the user for it
+       separately when it's present. Item lines follow a
+       `Ref Description Order No/Item No Ordered Supplied Unit Price Amount`
+       table (category lines with no leading number interspersed) — messy,
+       inconsistent real-world paste formatting from an order-confirmation
+       page/PDF, which is exactly why this is an LLM-parsed job, not a
+       regex one.
+    2. Shorter/partial pastes (e.g. just a category + item list, no header),
+       which may carry no date at all. Fall back to a date stated elsewhere
+       in the same message (e.g. "bought this on the 3rd"); only default to
+       today/the message timestamp if neither the header nor a stated date
+       is found.
+  - **Matching reuses `record_purchase` itself**, not a new tool: the agent
+    extracts {item name, date} pairs via its own reasoning (no bespoke
+    parser needed on either end), then calls `record_purchase(item_name,
+    date, source: "receipt_scan", raw_ref: <original line text or order
+    ID>)` once per line — the same fuzzy-match-or-fail behavior
+    `ingest_receipt` already relies on. A failed match is reported back to
+    the requester as unmatched, never silently dropped and never used to
+    auto-create a new staple.
+  - **`source` is reused as `"receipt_scan"`**, not a new source value —
+    a backfilled order is, for reconciliation purposes, the same kind of
+    human-provided evidence a photographed receipt is (as opposed to
+    authoritative API data), and adding a new value would mean reopening
+    staples-host's already-built, already-deployed data model for something
+    this channel doesn't actually need. Not asked for here, so not done.
 
 **Keep:**
 - Persistent Node process holding the Discord gateway open, listening for
-  messages/reactions
+  messages/reactions in `#woolworths-ordering` and `#order-import`
 - Spinning up a short-lived sibling container per message (mounted Docker CLI +
   `/var/run/docker.sock`) to run one cold Claude Code invocation
 - Passing woolies-mcp and staples-host into each cold session's own MCP config
-  (fine in cold mode — this is not the bug path)
+  as remote `type: "http"` servers (fine in cold mode — this is not the bug
+  path), so the agent calls them as native `mcp__woolies__*` / `mcp__staples__*`
+  tools — no IPC bridge in between.
 - Reaction-confirm mechanism, entirely in the persistent process, independent of
   any individual cold call: post ✅/❌ (or 👍/👎) on proposed actions; a
   pending-actions store (JSON/SQLite, keyed by Discord message ID, supports
   multiple simultaneous pending actions); execute + confirm on ✅, reply "skipped" +
   clear on ❌. Requires `GuildMessageReactions` intent and
   `Partials.Message/Reaction/Channel` so reactions survive restarts.
+  - **How a proposal is initiated**, decided during this build: a direct
+    request ("add milk") gets executed immediately by the agent via native
+    woolies tools — no proposal needed. When the agent decides to *propose*
+    rather than act (a nudge it initiated, not something asked for this
+    message), it writes a `propose-action.json` file to its mounted workspace
+    (`{ summary: string, items: [{ name, sku, quantity, pricingUnit }] }`)
+    instead of calling any tool. After each cold run exits, the host checks
+    for that file; if present, it does the actual posting +
+    reaction-tracking itself (independent of the container, per the bullet
+    above), then deletes it. Same convention for the due/overdue and
+    never-tracked nudges below — whatever writes the proposal, one host-side
+    code path turns it into a tracked ✅/❌ post.
+  - **Executing on ✅** is a plain host-side function, not a fresh Claude
+    invocation: a direct MCP client call to woolies-mcp's
+    `set_cart_quantities`, using the pending entry's already-resolved SKUs/
+    quantities. No agent needs to be in the loop to apply a decision that's
+    already been made.
 - Session-ID resumption for conversation continuity across separate cold calls
   (save session ID, pass `--resume <id>` next time) — new addition, not in the old
   code, build it in from the start.
-- **Woolworths auth-failure alerting.** The existing bot (posting under the
-  Discord identity "Claude_BotAPP") already detects when woolies-mcp's Woolworths
-  session has died and posts an alert instructing manual re-login, e.g.:
-  `Woolworths session is dead. Fix it from your PC: npm run login -- --server
-  <woolies-mcp Funnel URL>`. This is host-side detection/alerting logic, not
-  something woolies-mcp does itself — woolies-mcp just fails normally (an
-  auth-failure response) when its session is dead. Preserve this behavior in the
-  rebuild: discordbot-host should distinguish "woolies-mcp says auth failed" from
-  other failure modes and post this same kind of alert. Also applies to
-  staples-host's order-history sync calls to woolies-mcp — an auth failure there
-  must be surfaced the same way, not silently treated as "no orders in this
-  period" (which would corrupt the replenishment-interval data). Confirm the
-  `npm run login -- --server <url>` re-auth flow still works unchanged post-rebuild
-  before assuming the alert text is still accurate.
-- **"Never tracked" item alerting.** A separate, standing Discord message/alert for
-  items that are seeded (via `set_interval`) but have no `last_purchased` anchor —
-  same underlying data as the Craft doc's "❔ Never tracked" section, but as its own
-  distinct Discord post, not folded into any other alert. Call staples-host's
-  `list_staples()` (or equivalent), filter for no-anchor seeded items, and post
-  them separately. Not buildable until this phase starts.
+- **Woolworths auth-failure alerting.** Detection mechanism decided during this
+  build: a periodic (every 30 min) direct host-side call to woolies-mcp's
+  `auth_status` tool — no agent involved. Confirmed live shape: `{
+  accountToolsUsable: boolean, cookieExpiresAt?: string, hint: string }`.
+  Alert only on the `true → false` transition (not every poll while still
+  down), with a daily repeat while it stays down so it doesn't scroll off
+  unnoticed. Alert text confirmed still accurate against the real woolies-mcp
+  source (`npm run login -- --server <url>` → `scripts/login.ts`, which still
+  takes `--server <url>` exactly as documented): `Woolworths session is dead.
+  Fix it from your PC: npm run login -- --server <woolies-mcp Funnel URL>`.
+  Also applies to staples-host's order-history sync calls to woolies-mcp
+  (not yet implemented) — an auth failure there must be surfaced the same
+  way, not silently treated as "no orders in this period" (which would
+  corrupt the replenishment-interval data).
+- **"Never tracked" item alerting.** Now buildable — staples-host is real.
+  Mechanism: a periodic (every 6h) direct host-side call to staples-host's
+  `list_staples()`, filtered to items with an interval set (seeded or
+  learned) **and** no `last_purchased` anchor — exactly the "❔ Never tracked"
+  category from the Craft doc, never "❔ Not enough data yet" (no interval at
+  all, neither seeded nor learned). The filter checks
+  `replenishment_interval_days != null` explicitly rather than trusting
+  `status: "due"` alone to imply it — a defensive check against the
+  no-interval/no-alert guarantee silently breaking if `status`'s derivation
+  ever changes elsewhere. No-interval items must never trigger a Discord
+  alert under **any** sentry (this one or a future due/overdue one) — the
+  same "stay silent until there's a real basis to flag something" goal the
+  replenishment logic itself was built around. No agent involved in the poll.
+  Posted as its own distinct message, not folded into the auth-failure alert
+  or into cart proposals. Only reposts when the filtered item set actually
+  changed since the last post, so it doesn't repeat itself every 6 hours for
+  no reason. A test-only bypass (env var or manual trigger) lets this be
+  verified on demand instead of waiting up to 6h for real data — the bypass
+  only shortcuts *when* the check runs, never the no-interval exclusion
+  itself.
 
 **Drop:**
 - Any warm/streaming session code path — nothing should keep a Claude session
