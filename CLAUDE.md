@@ -61,10 +61,50 @@ queries. Only staples-host touches this volume.
 - `set_interval(item_name, days)` — manual override
 - `sync_from_craft()` — pull Staples list from Craft; add new items, never drop
   items with purchase history
+- `push_status_to_craft()` — write current status (name, due/overdue/not_due,
+  last_purchased, interval) to a **separate, bot-owned Craft doc named "Staples
+  Status"** — created manually by the user first (Craft's write API likely needs
+  an existing doc ID/target, not create-and-write in one call), used purely for
+  visual reference. Not the source Staples doc `sync_from_craft()` reads from —
+  this avoids a pull/push loop: `sync_from_craft()` never reads this doc, and it
+  can be safely overwritten wholesale on every push (no diff/merge against user
+  edits needed, since the user isn't expected to hand-edit it).
+
+  **Format** — grouped by urgency, not alphabetical, with a last-updated
+  timestamp and each item showing its current interval ("usually every ~X days")
+  alongside days since last purchase:
+  ```
+  Quartermaster — Staples Status
+  Last updated: <timestamp>
+
+  ⚠️ Overdue
+  - <item> — last bought <N> days ago (usually every ~<interval> days)
+
+  🟡 Due soon
+  - <item> — last bought <N> days ago (usually every ~<interval> days)
+
+  ✅ Stocked
+  - <item> — last bought <N> days ago (usually every ~<interval> days)
+
+  ❔ Not enough data yet
+  - <item> — no interval learned yet
+  ```
+  Items with no learned/seeded interval get their own quiet section rather than
+  being lumped into "Stocked," consistent with the replenishment logic's existing
+  goal of avoiding noise during the learning phase.
+
+  Confirm Craft's write API/token scope before implementing — the existing
+  `CRAFT_API_TOKEN` may need broader permissions than the read-only pull required.
 
 **Replenishment logic:** new items start `seeded`, `status = not_due` until ≥2
 purchase events exist. At ≥3 events, interval = median gap between purchases
 (outlier-resistant), confidence → `learned`. No-interval items never surface as due.
+Status thresholds: `not_due` while `days_since_last_purchased < interval`; `due`
+once `days_since_last_purchased >= interval`; `overdue` once
+`days_since_last_purchased >= interval * OVERDUE_MULTIPLIER`. `OVERDUE_MULTIPLIER`
+was introduced during the build as a tunable constant (not specified in this brief)
+— confirm its actual configured value, since it controls how much slack an item
+gets before escalating from a soft "due" nudge to an "overdue" alert.
 
 **Reconciliation (once order-history API is fixed):** both sources tag events with
 `source` from day one. Match `receipt_scan` and `order_history_api` events for the
