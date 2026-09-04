@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+quartermaster_deploy_key*
+config/secrets*
+**/craft-token*
