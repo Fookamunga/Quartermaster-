@@ -19,6 +19,25 @@ import { startWooliesHealthSentry } from "./wooliesHealthSentry.js";
 
 const WARM_SESSION_CHANNELS: ChannelKey[] = ["woolworths-ordering"];
 
+// Serializes woolworths-ordering agent turns per channel. This NAS cannot run
+// more than one cold Claude Agent SDK session at a time without thrashing
+// into swap -- confirmed during deployment when 3 near-simultaneous messages
+// spawned 3 concurrent sibling containers and all 3 timed out without a
+// single reply. Doesn't fix the underlying RAM limit or make anything
+// faster; it just stops concurrent sessions competing for it, so a burst of
+// messages gets answered in order, one at a time, instead of all thrashing
+// together. See CLAUDE.md's discordbot-host section.
+const channelTurnQueues = new Map<ChannelKey, Promise<void>>();
+
+function enqueueChannelTurn(channelKey: ChannelKey, turn: () => Promise<void>): Promise<void> {
+  const previous = channelTurnQueues.get(channelKey) ?? Promise.resolve();
+  // Chain off the previous turn regardless of whether it succeeded or
+  // failed, so one bad turn doesn't wedge the queue for this channel forever.
+  const run = previous.catch(() => {}).then(turn);
+  channelTurnQueues.set(channelKey, run.catch(() => {}));
+  return run;
+}
+
 function ensureDockerRunning(): void {
   try {
     execSync("docker info", { stdio: "pipe", timeout: 10000 });
@@ -115,7 +134,10 @@ async function handleMessage(message: Message): Promise<void> {
     return;
   }
 
-  // Only woolworths-ordering reaches a cold session at this point.
+  // Only woolworths-ordering reaches a cold session at this point. Queued per
+  // channel (see enqueueChannelTurn above) -- the session-ID read/save and
+  // reply/proposal handling all happen inside the queued turn so a later
+  // message can never read a stale session ID from one still in flight.
   const promptParts = [
     `Message from ${message.author.username} at ${new Date().toISOString()} (message_id=${message.id}):`,
     content || "(no text content)",
@@ -125,30 +147,32 @@ async function handleMessage(message: Message): Promise<void> {
   }
   const prompt = promptParts.join("\n\n");
 
-  const sessionId = getSessionId(channelKey);
-  const output = await runAgent(channelKey, prompt, sessionId);
+  await enqueueChannelTurn(channelKey, async () => {
+    const sessionId = getSessionId(channelKey);
+    const output = await runAgent(channelKey, prompt, sessionId);
 
-  if (output.newSessionId) {
-    saveSessionId(channelKey, output.newSessionId);
-  }
+    if (output.newSessionId) {
+      saveSessionId(channelKey, output.newSessionId);
+    }
 
-  if (output.status === "error") {
-    logger.error("Container agent error", { channelKey, error: output.error, elapsedMs: Date.now() - receivedAt });
-    await sendChannelMessage(channelKey, `Something went wrong: ${output.error}`).catch(() => {});
-    return;
-  }
+    if (output.status === "error") {
+      logger.error("Container agent error", { channelKey, error: output.error, elapsedMs: Date.now() - receivedAt });
+      await sendChannelMessage(channelKey, `Something went wrong: ${output.error}`).catch(() => {});
+      return;
+    }
 
-  if (output.result) {
-    await sendChannelMessage(channelKey, output.result);
-    logger.info("Reply sent", { channelKey, elapsedMs: Date.now() - receivedAt });
-  }
+    if (output.result) {
+      await sendChannelMessage(channelKey, output.result);
+      logger.info("Reply sent", { channelKey, elapsedMs: Date.now() - receivedAt });
+    }
 
-  const proposal = takeProposedAction(channelKey);
-  if (proposal) {
-    await postAndTrackAction(message.channelId, proposal.summary, proposal.items).catch((err) =>
-      logger.error("Failed to post proposed action", { err: String(err) }),
-    );
-  }
+    const proposal = takeProposedAction(channelKey);
+    if (proposal) {
+      await postAndTrackAction(message.channelId, proposal.summary, proposal.items).catch((err) =>
+        logger.error("Failed to post proposed action", { err: String(err) }),
+      );
+    }
+  });
 }
 
 // woolworths-ordering is the only channel that can ever reach an agent

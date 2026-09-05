@@ -335,6 +335,23 @@ away by itself — but if `#woolworths-ordering` is switched to warm mode (see
 "Warm sessions" above), expect roughly 9-61s/message instead once a warm session
 is up, per nanoclaw's own measurements with the bugs fixed.
 
+**Concurrency model — one cold session per channel at a time, always.** The
+"~1.5 min/message" figure above assumes messages are handled one at a time;
+nothing enforced that until this was hit during the initial NAS deployment —
+3 messages arriving within 5 seconds spawned 3 concurrent cold sessions,
+which thrashed the NAS's limited RAM into swap and all 3 timed out without a
+single reply. `discordbot-host/src/index.ts`'s `enqueueChannelTurn` now
+queues the full agent turn (session-ID read, container run, session-ID save,
+reply, proposal posting) per channel — a later message always waits for the
+one ahead of it to fully finish before its own cold session spawns. This is
+purely a serialization fix, not a capacity fix: it does not make the NAS
+faster or add RAM, it only stops concurrent sessions from competing for the
+RAM it has. A burst of messages during a period of otherwise-high NAS load
+should still be expected to take *longer* in total than usual — each queued
+turn waits for the last, and the NAS may still be slow for other reasons —
+not faster, and not a guarantee every burst completes within any particular
+time budget.
+
 ## Open items to confirm before/during build
 - Shape of the fixed order-history API (fields, pagination, date format) — gates
   staples-host's order-history calls and the reconciliation pass
