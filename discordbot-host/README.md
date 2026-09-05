@@ -87,6 +87,19 @@ The container process runs `query()` exactly once and exits. `resume` across
 separate cold container invocations (one process each) always works this
 way. See "Warm mode" below for the other option, and its own caveats.
 
+**The message timestamp handed to the agent is explicit NZ local time, not
+the container's own UTC clock.** Found live while investigating a related
+bug in staples-host: this container runs in UTC on the NAS (no `TZ` set),
+while the household is in NZ (UTC+12/+13) — a bare `new
+Date().toISOString()` is technically UTC-marked but gives the agent no
+signal that it needs converting, risking wrong-day date-arithmetic
+("today", "tomorrow", "this weekend") for roughly half of every NZ day.
+`src/nzTime.ts`'s `nzTimestamp()` formats via `Intl.DateTimeFormat` with an
+explicit `timeZone: "Pacific/Auckland"` and an explicit offset in the
+string itself (e.g. "2026-09-06, 11:23:00 GMT+12"), hardcoded rather than
+reading `TZ` from the environment for the same reason as staples-host's
+matching fix — correct regardless of container/OS config.
+
 ## Propose/confirm flow
 
 Decided during this build (see CLAUDE.md): a direct request executes

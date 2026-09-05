@@ -65,8 +65,26 @@ export function computeStatus(
   return computeStatusFromAnchor(item.replenishment_interval_days, item.last_purchased);
 }
 
+// Household is in NZ (Woolworths NZ, NZ Tailscale-hosted infra) but the
+// container almost certainly isn't -- confirmed live on the NAS: both
+// staples-host and discordbot-host run in UTC (no TZ set, the standard
+// minimal-base-image default), while NZ is UTC+12/+13. `new
+// Date().toISOString()` is always UTC regardless of any TZ env var, so it
+// silently returns yesterday's date for roughly the first half of every NZ
+// calendar day. Hardcoded to Pacific/Auckland rather than reading TZ from
+// the environment -- this way it's correct regardless of container/OS
+// config, and can't silently regress if a future redeploy forgets to set
+// TZ. Confirmed working inside the actual node:24-slim base image (full
+// ICU, no separate tzdata package needed).
+const NZ_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Pacific/Auckland",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
 export function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  return NZ_DATE_FORMATTER.format(new Date());
 }
 
 /**

@@ -8,6 +8,7 @@ import { ensureWorkspaceDirs, takeProposedAction } from "./containerRunner.js";
 import { connectDiscord, getChannelKeyForId, sendChannelMessage } from "./discord.js";
 import { logger } from "./logger.js";
 import { startNeverTrackedSentry } from "./neverTrackedSentry.js";
+import { nzTimestamp } from "./nzTime.js";
 import { ingestReceiptPhoto } from "./orderImportPhotos.js";
 import { formatIngestResult } from "./orderImportRelay.js";
 import { ingestOrderText } from "./orderImportText.js";
@@ -139,7 +140,7 @@ async function handleMessage(message: Message): Promise<void> {
   // reply/proposal handling all happen inside the queued turn so a later
   // message can never read a stale session ID from one still in flight.
   const promptParts = [
-    `Message from ${message.author.username} at ${new Date().toISOString()} (message_id=${message.id}):`,
+    `Message from ${message.author.username} at ${nzTimestamp()} (NZ local time; message_id=${message.id}):`,
     content || "(no text content)",
   ];
   if (savedFiles.length > 0) {

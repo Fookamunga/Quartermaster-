@@ -68,6 +68,24 @@ reconciliation ever needs real queries (per CLAUDE.md) — not needed yet.
 
 ## Replenishment logic
 
+- **`todayIso()` is hardcoded to `Pacific/Auckland`, not the container's own
+  clock.** Found live while investigating an unrelated status bug: both
+  staples-host and discordbot-host run in UTC on the NAS (no `TZ` set, the
+  standard minimal-base-image default), while the household is in NZ
+  (UTC+12/+13). `new Date().toISOString()` is always UTC regardless of any
+  `TZ` env var, so the old implementation returned *yesterday's* date for
+  roughly the first half of every NZ calendar day — confirmed directly:
+  real NZ date `2026-09-06` vs. the old code's `2026-09-05`, at the same
+  instant. This affected `ingest_receipt`/`ingest_order_text`'s fallback
+  date (`date ?? todayIso()`) and every `daysSince()` call underlying
+  due/overdue math. Fixed via `Intl.DateTimeFormat` with an explicit
+  `timeZone: "Pacific/Auckland"`, confirmed working in the actual
+  `node:24-slim` base image (full ICU, no separate tzdata package needed)
+  — hardcoded rather than reading `TZ` from the environment so it's correct
+  regardless of container/OS config and can't silently regress on a future
+  redeploy. Checked the real production data for anything already affected
+  by the old fallback: zero purchase events existed at the time this was
+  found, so nothing needed correcting — only future ingests were at risk.
 - New items start `interval_confidence: seeded`, `status: not_due`.
 - Status is only ever evaluated once an item has **2+ purchase events** — below
   that there's no purchase history to anchor a due date against.
