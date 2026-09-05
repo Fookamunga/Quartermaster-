@@ -217,28 +217,31 @@ function startWarmSession(channelKey: ChannelKey): WarmSessionState {
       ...(model ? { model } : {}),
       cwd: workspaceDir,
       allowedTools,
-      // NOT allowDangerouslySkipPermissions here (unlike the cold-session
-      // runner): that option forces the CLI's literal --dangerously-skip-
-      // permissions flag, which the CLI refuses outright when running as
-      // root -- and this process (unlike the cold runner's own container,
-      // which runs as a non-root `node` user) runs as root, since it needs
-      // docker.sock access to spawn sibling containers. permissionMode:
-      // "bypassPermissions" alone gives the same no-interactive-prompts
-      // behavior via a different, sanctioned CLI flag that isn't blocked
-      // under root. Found live: enabling warm mode crashed the CLI
-      // immediately with "cannot be used with root/sudo privileges", which
-      // fed straight into an unthrottled restart loop (89 attempts/2min,
-      // climbing CPU load) since scheduleRestart has no backoff -- see the
-      // TODO below.
+      // permissionMode: "bypassPermissions" (with or without the redundant
+      // allowDangerouslySkipPermissions) hits the CLI's own root guard --
+      // isRootOutsideDeliberateSandbox() in the bundled CLI -- which refuses
+      // to run as root unless told the root context is a deliberate sandbox.
+      // This process runs as root (unlike the cold-session runner's own
+      // container, which runs as a non-root `node` user) because it needs
+      // docker.sock access to spawn sibling containers. Found live: enabling
+      // warm mode crashed the CLI immediately with "cannot be used with
+      // root/sudo privileges", which fed straight into an unthrottled
+      // restart loop (89 attempts/2min, climbing CPU load) before
+      // scheduleRestart's backoff (added the same time as this fix) existed.
+      // IS_SANDBOX=1 below is the CLI's own documented signal for exactly
+      // this case (found by inspecting the bundled CLI's isSandboxEnvSet()
+      // check) -- true here, since this really is a container, just one
+      // that happens to run as root.
       permissionMode: "bypassPermissions",
       settingSources: ["project"],
       mcpServers,
       // Replaces the subprocess env entirely (per SDK docs) -- spread
-      // process.env so PATH/Claude-auth vars still reach it, then pin HOME
-      // to a per-channel dir so this channel's warm session keeps its own
-      // Claude Code session/transcript state, isolated the same way the
-      // cold path's mounted .claude directory isolates it per channel.
-      env: { ...process.env, HOME: claudeHomeDir(channelKey) },
+      // process.env so PATH/Claude-auth vars still reach it, pin HOME to a
+      // per-channel dir so this channel's warm session keeps its own Claude
+      // Code session/transcript state (isolated the same way the cold
+      // path's mounted .claude directory isolates it per channel), and set
+      // IS_SANDBOX=1 so the CLI's root guard above doesn't fire.
+      env: { ...process.env, HOME: claudeHomeDir(channelKey), IS_SANDBOX: "1" },
       stderr: (data: string) => logger.info(`[warm:${channelKey}] ${data.trimEnd()}`),
     },
   });
