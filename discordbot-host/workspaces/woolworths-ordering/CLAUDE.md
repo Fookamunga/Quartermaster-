@@ -93,6 +93,12 @@ generic term against the full catalogue returns mostly noise (e.g. "cheese"
 alone surfaces ~475 matches) — source the candidate list through this
 three-tier fallback instead, using whichever tier actually produces results:
 
+Every tier below produces a **top pick** (the one candidate to lead with,
+marked ✅) plus zero or more **other candidates** (numbered). This
+distinction is explicit regardless of which tier fires — see the rendering
+rules after the tiers for exactly how to show and how to let the user
+select it.
+
 **Tier 1 — purchase history.** Call
 `mcp__staples__suggest_alternatives(item_name: <generic term>)`. It handles
 resolution and ranking internally: purchase-history lookup, re-resolving up
@@ -102,21 +108,26 @@ via its own narrow, read-only woolies-mcp exception, deduping by resolved
 the same real product), and ranking by frequency-within-that-window with
 recency as the tiebreaker — see CLAUDE.md's staples-host MCP tools section
 for the full mechanics; you don't need to reimplement any of it here.
-- If it returns any candidates, that's your list, already resolved (name,
-  sku, price) — proceed straight to the already-in-cart-callout-plus-
-  numbered-list step below using them, no need to call `search_products`
-  yourself for these.
-- If it returns none (`item_name` isn't a tracked staple, has no purchase
-  history with a `product_name`, or nothing historical resolves to a live
-  product anymore), go to Tier 2.
+- Returns `top_pick` ({name, sku, price} or null) as its own explicit
+  field — not array position 0 of some flat list, so there's never any
+  ambiguity about which one is the ranked winner — plus `other_candidates`
+  (up to 4 more, same shape).
+- If `top_pick` is non-null, that's a genuinely *ranked* result (by real
+  purchase frequency) — proceed straight to the rendering rules below using
+  `top_pick` and `other_candidates` as given, no need to call
+  `search_products` yourself for these.
+- If `top_pick` is null (`item_name` isn't a tracked staple, has no
+  purchase history with a `product_name`, or nothing historical resolves to
+  a live product anymore), go to Tier 2.
 - It may also return a best-value entry (`{name, pricePerUnit}`) alongside
-  the candidates — the cheapest same-variety option across any brand (not
-  just the top pick's own brand), found by staples-host itself. See
-  CLAUDE.md's staples-host MCP tools section for the full mechanics and why
-  this is a best-effort suggestion, not an authoritative cheapest-available
-  claim — present it as such, don't state it more confidently than that.
-  Purely additive: this is a Tier-1-only extra, never present from Tier
-  2/3, and never changes which candidate is numbered where.
+  `top_pick`/`other_candidates` — the cheapest same-variety option across
+  any brand (not just `top_pick`'s own brand), found by staples-host
+  itself. See CLAUDE.md's staples-host MCP tools section for the full
+  mechanics and why this is a best-effort suggestion, not an authoritative
+  cheapest-available claim — present it as such, don't state it more
+  confidently than that. Purely additive: this is a Tier-1-only extra,
+  never present from Tier 2/3, and never changes which candidate is the
+  top pick or how the others are numbered.
 
 **Tier 2 — cart-narrowed search.** Call `get_cart` (needed for the
 already-in-cart check regardless) and look for a line whose product name
@@ -125,37 +136,54 @@ Edam 500g"). If found, pull out the distinguishing brand/variety words from
 that line's name (e.g. "edam cheese", not the full "Mainland Cheese Edam
 500g") and call `search_products` with that narrower query instead of the
 bare generic term. If nothing in the cart plausibly matches the request
-either, go to Tier 3.
+either, go to Tier 3. **Top pick here is `search_products`' own first
+result** — the site's own top relevance match for your narrowed query, not
+a purchase-history-backed ranking; still worth marking (it's the search
+engine's own best guess), just not as strong a signal as Tier 1's.
 
 **Tier 3 — today's broad search (last resort).** Call
 `search_products(query: <generic term>)` unnarrowed, exactly as before.
+**Top pick here is likewise `search_products`' own first result** — for a
+bare generic term (e.g. "cheese", ~475 matches) this is the weakest of the
+three signals, essentially arbitrary relevance-ranking rather than anything
+tailored to this household. Still mark it ✅ for consistency (the user
+asked for this to apply "regardless of tier"), but don't oversell it in
+your own phrasing.
 
-Whichever tier supplies the candidates, then:
+## Rendering the top pick and other candidates
+
+Whichever tier supplies them:
 
 - Call `get_cart` (if you haven't already, from Tier 2) and check whether
-  any candidate is already in it.
-  - If one is, note that first as plain informational text with its current
-    quantity (e.g. "Already in cart: Anchor Blue Top Milk 2L — qty 1"), not
-    as a numbered choice.
-  - Then list the *other* candidate brands/options below it, each as a
-    numbered choice (number, name, size/pack, price).
-  - If none of the candidates are already in the cart, just list every
-    candidate as a numbered choice — skip the "already in cart" line.
-  - If Tier 1 also returned a best-value entry, append it as its own line
-    below the numbered list — never in place of any candidate, never
-    reordering them: `💰 Best value: <name> — $<price>/<unit>`. Omit this
-    line entirely when Tier 1 didn't return one (not a tracked staple,
-    Tier 2/3 fired instead, or staples-host couldn't compute one) — never
-    fabricate a per-unit price yourself.
-- Ask which one to add, then wait for the user's next message to
-  disambiguate before calling `set_cart_quantity`/`set_cart_quantities`. A
-  reply that's just a bare number (e.g. "2") refers to that numbered option
-  — treat it as the selection, don't ask for the product name repeated back.
-  Session-ID resumption means that follow-up arrives as a new cold call with
-  this conversation's context already intact, so no
-  `propose-action.json`/reaction flow is needed here — a request only counts
-  as "already asked for" (see Confirming Cart Changes above) once a specific
-  product has been chosen this way.
+  `top_pick` or any other candidate is already in it.
+- **✅ line, always first, one of two forms:**
+  - `top_pick` not in cart: `✅ <name> — $<price>`
+  - `top_pick` already in cart: `✅ Already in cart: <name> — qty <N>`
+    (merge the two signals into one line rather than showing both
+    separately)
+- If a candidate *other than* `top_pick` is already in the cart, note that
+  next as its own plain-text line (unchanged from before): `Already in
+  cart: <name> — qty <N>` — not as a numbered choice.
+- Then list the remaining `other_candidates` below that, each as a
+  numbered choice starting at 1 (number, name, size/pack, price). These
+  numbers never include `top_pick` — it's the ✅ line, not "#1".
+- If Tier 1 also returned a best-value entry, append it as its own line
+  after the numbered list — never in place of `top_pick` or any numbered
+  candidate, never reordering them: `💰 Best value: <name> —
+  $<price>/<unit>`. Omit this line entirely when Tier 1 didn't return one
+  (not a tracked staple, Tier 2/3 fired instead, or staples-host couldn't
+  compute one) — never fabricate a per-unit price yourself.
+- **Selecting one:** an affirmative reply ("yes", "sounds good", "add it",
+  "sure", or similar) selects `top_pick`. A bare number (e.g. "2") selects
+  that position in the numbered `other_candidates` list — treat it as the
+  selection, don't ask for the product name repeated back. Either way, wait
+  for the user's next message before calling
+  `set_cart_quantity`/`set_cart_quantities`. Session-ID resumption means
+  that follow-up arrives as a new cold call with this conversation's
+  context already intact, so no `propose-action.json`/reaction flow is
+  needed here — a request only counts as "already asked for" (see
+  Confirming Cart Changes above) once a specific product has been chosen
+  this way.
 
 Only skip this whole flow when there's a single clearly obvious match (an
 exact name match, or genuinely only one real candidate) — don't ask the user

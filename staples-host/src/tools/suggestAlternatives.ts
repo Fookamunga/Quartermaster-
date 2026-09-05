@@ -19,16 +19,18 @@ export function registerSuggestAlternatives(server: McpServer): void {
         "woolies-mcp's own search_products, dedupes by resolved sku/variantKey " +
         "(not raw text, which varies across receipts/orders for the same real " +
         "product), and ranks by frequency within that window with recency as the " +
-        "tiebreaker. Returns up to 5 fully-resolved candidates as " +
-        "{name, sku, price} -- ready to present directly, no further lookup " +
-        "needed. Returns an empty candidates list (never a guess) if item_name " +
-        "isn't a tracked staple, has no purchase history with a product_name, or " +
-        "nothing historical resolves to a live product anymore. Also returns a " +
-        "best_value entry ({name, pricePerUnit}) when computable: the cheapest " +
-        "same-variety option across any brand, not just the top pick's own -- a " +
-        "best-effort suggestion, not an authoritative cheapest-available claim " +
-        "(see CLAUDE.md). Omitted (not guessed) when nothing usable is found. " +
-        "Read-only: never touches the cart, never places an order.",
+        "tiebreaker. Returns top_pick ({name, sku, price} or null) -- the #1-ranked " +
+        "result, called out as its own explicit field rather than left as array " +
+        "position 0, so a caller can't lose track of which one it is -- plus " +
+        "other_candidates (up to 4 more, same shape). Both empty/null (never a " +
+        "guess) if item_name isn't a tracked staple, has no purchase history with " +
+        "a product_name, or nothing historical resolves to a live product " +
+        "anymore. Also returns a best_value entry ({name, pricePerUnit}) when " +
+        "computable: the cheapest same-variety option across any brand, not just " +
+        "top_pick's own -- a best-effort suggestion, not an authoritative " +
+        "cheapest-available claim (see CLAUDE.md). Omitted (not guessed) when " +
+        "nothing usable is found. Read-only: never touches the cart, never " +
+        "places an order.",
       inputSchema: {
         item_name: z.string().min(1).describe("Generic item name, e.g. 'cheese'"),
       },
@@ -37,7 +39,7 @@ export function registerSuggestAlternatives(server: McpServer): void {
       const db = await readDb();
       const item = findBestItemMatch(db.items, item_name);
       if (!item) {
-        return toolJson({ candidates: [] });
+        return toolJson({ top_pick: null, other_candidates: [] });
       }
 
       const events = db.purchase_events
@@ -46,11 +48,16 @@ export function registerSuggestAlternatives(server: McpServer): void {
 
       const { candidates, topPickFull } = await rankAlternatives(events);
       if (candidates.length === 0) {
-        return toolJson({ candidates: [] });
+        return toolJson({ top_pick: null, other_candidates: [] });
       }
 
+      const [topPick, ...otherCandidates] = candidates;
       const bestValue = topPickFull ? await findBestValue(topPickFull) : null;
-      return toolJson(bestValue ? { candidates, best_value: bestValue } : { candidates });
+      return toolJson({
+        top_pick: topPick,
+        other_candidates: otherCandidates,
+        ...(bestValue ? { best_value: bestValue } : {}),
+      });
     },
   );
 }

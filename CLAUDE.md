@@ -133,13 +133,16 @@ queries. Only staples-host touches this volume.
   the resolved results by `sku`/`variantKey` (not by the raw extracted text,
   which varies across receipts/orders for the same real product), ranks by
   frequency within that window with recency as the tiebreaker, and returns
-  up to the top 5 as `{name, sku, price}` — fully resolved, ready for a
-  caller to present directly. Returns an empty list rather than a guess if
-  `item_name` isn't a tracked staple, has no purchase history with a
-  `product_name`, or none of the historical names resolve to a live product
-  anymore. Identically callable from Claude mobile/desktop directly, not
-  just discordbot-host's cold session — same boundary as every other
-  staples-host tool.
+  the #1 result as `top_pick` (`{name, sku, price}` or `null`) plus up to 4
+  more as `other_candidates` — `top_pick` is its own explicit field, not
+  array position 0, specifically so a caller can't lose track of which
+  result is the ranked winner (see the workspace CLAUDE.md's ✅-marking
+  convention, which depends on this being unambiguous). Both empty/null
+  rather than a guess if `item_name` isn't a tracked staple, has no
+  purchase history with a `product_name`, or none of the historical names
+  resolve to a live product anymore. Identically callable from Claude
+  mobile/desktop directly, not just discordbot-host's cold session — same
+  boundary as every other staples-host tool.
 
   **Best-value entry (additive, never replaces/reorders the ranked
   candidates):** once the top-ranked candidate resolves, one further search
