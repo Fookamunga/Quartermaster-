@@ -140,6 +140,54 @@ queries. Only staples-host touches this volume.
   anymore. Identically callable from Claude mobile/desktop directly, not
   just discordbot-host's cold session — same boundary as every other
   staples-host tool.
+
+  **Best-value entry (additive, never replaces/reorders the ranked
+  candidates):** once the top-ranked candidate resolves, one further search
+  compares it against the same *variety*, any brand -- e.g. all Edam cheese
+  (Mainland, Woolworths, Dairyworks, Chesdale, Anchor, ...), not narrowed to
+  the top pick's own brand. Deliberately broader than a same-`slug` (same
+  product line) comparison: confirmed live that the narrower scope misses
+  real savings a shopper would actually want to know about (Mainland's own
+  cheapest Edam size priced out at $1.41/100g; the real cheapest Edam
+  anywhere was a *different brand*, Woolworths Cheese Edam 1kg at
+  $1.36/100g -- invisible to a same-brand-only comparison).
+
+  The variety query is derived deterministically from the top pick's own
+  `name` and `brand` fields -- strip the brand and a trailing size pattern
+  (e.g. `\d+\s*(g|kg|ml|l)`) from the name, e.g. "Mainland Cheese Edam 500g"
+  minus brand "Mainland" minus size "500g" leaves "Cheese Edam" as the
+  query. This keeps the tool fully self-contained server-side: no new
+  parameter, no dependence on the agent extracting a good search term
+  itself. Follows `search_products` pagination until `coverage`/`complete`
+  says so -- confirmed live this is bounded (a variety-level query like
+  "edam cheese" needed 2 pages for 23 results), not the dozens of pages an
+  unnarrowed generic term like "cheese" (~475 matches) would need.
+
+  **This reopens exactly the coverage-checking cost the same-line version
+  avoided, and accepts it deliberately for a materially better answer.**
+  It also inherits a real data-quality risk with no clean fix: a variety
+  query's results mix genuine comparable products with superficially
+  similar but different items that happen to match the same words --
+  confirmed live, "edam cheese" returned 5 "Cheese Snack Crackers & Edam"
+  combo products (a completely different product type) alongside 18 actual
+  cheese products, all sharing the identical `department` field, so
+  department can't filter them out. The only lever is a name-based
+  heuristic -- excluding results whose name contains a word (e.g.
+  "cracker", "snack") that the top pick's own name doesn't contain -- and
+  it is not a guarantee: a combo product happening to price lower per unit
+  than genuine alternatives in some other category could still slip
+  through uncaught. **`suggest_alternatives`'s best-value entry is
+  documented and accepted as a best-effort suggestion, not an authoritative
+  cheapest-available claim** -- do not present or treat it as a stronger
+  guarantee than that.
+
+  Parses each surviving candidate's `unitPrice` (a formatted string, e.g.
+  `"$1.90 / 100G"` -- present on most products but not all, and its
+  denomination varies by product), groups by denomination, and returns the
+  cheapest within the largest same-denomination group as
+  `{name, pricePerUnit}`. Omitted entirely (never guessed) if the top pick
+  has no parseable `unitPrice`, the variety search finds nothing usable, or
+  nothing survives the exclusion heuristic.
 - `filter_staples(ingredients: string[])` — which ingredients aren't already-stocked
 - `ingest_receipt(image)` — vision extraction (line items + order/invoice
   reference number, when present) → order_reference dedup check → fuzzy-match →

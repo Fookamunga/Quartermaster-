@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { rankAlternatives } from "../alternatives.js";
+import { findBestValue } from "../bestValue.js";
 import { findBestItemMatch } from "../fuzzy.js";
 import { readDb } from "../storage.js";
 import { toolJson } from "./shared.js";
@@ -22,8 +23,12 @@ export function registerSuggestAlternatives(server: McpServer): void {
         "{name, sku, price} -- ready to present directly, no further lookup " +
         "needed. Returns an empty candidates list (never a guess) if item_name " +
         "isn't a tracked staple, has no purchase history with a product_name, or " +
-        "nothing historical resolves to a live product anymore. Read-only: never " +
-        "touches the cart, never places an order.",
+        "nothing historical resolves to a live product anymore. Also returns a " +
+        "best_value entry ({name, pricePerUnit}) when computable: the cheapest " +
+        "same-variety option across any brand, not just the top pick's own -- a " +
+        "best-effort suggestion, not an authoritative cheapest-available claim " +
+        "(see CLAUDE.md). Omitted (not guessed) when nothing usable is found. " +
+        "Read-only: never touches the cart, never places an order.",
       inputSchema: {
         item_name: z.string().min(1).describe("Generic item name, e.g. 'cheese'"),
       },
@@ -39,8 +44,13 @@ export function registerSuggestAlternatives(server: McpServer): void {
         .filter((e) => e.item_id === item.item_id && e.product_name)
         .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
-      const candidates = await rankAlternatives(events);
-      return toolJson({ candidates });
+      const { candidates, topPickFull } = await rankAlternatives(events);
+      if (candidates.length === 0) {
+        return toolJson({ candidates: [] });
+      }
+
+      const bestValue = topPickFull ? await findBestValue(topPickFull) : null;
+      return toolJson(bestValue ? { candidates, best_value: bestValue } : { candidates });
     },
   );
 }

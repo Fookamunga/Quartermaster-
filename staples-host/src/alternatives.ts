@@ -1,5 +1,5 @@
 import type { PurchaseEvent } from "./types.js";
-import { searchTopProduct, type WooliesProduct } from "./wooliesClient.js";
+import { searchTopProductFull, type WooliesProductFull } from "./wooliesClient.js";
 
 // See CLAUDE.md's suggest_alternatives entry and the #woolworths-ordering
 // workspace CLAUDE.md's "Choosing a Product Among Multiple Matches" for the
@@ -13,8 +13,17 @@ export interface RankedAlternative {
   price: number | null;
 }
 
+export interface RankedAlternativesResult {
+  candidates: RankedAlternative[];
+  // Full data for the #1-ranked candidate specifically (brand, unitPrice
+  // included) -- null whenever candidates is empty. Callers (e.g.
+  // suggest_alternatives) use this to compute the best-value entry without
+  // a duplicate lookup; ranking itself never needs these extra fields.
+  topPickFull: WooliesProductFull | null;
+}
+
 interface Candidate {
-  product: WooliesProduct;
+  product: WooliesProductFull;
   frequency: number;
   mostRecentDate: string;
 }
@@ -26,14 +35,14 @@ interface Candidate {
  * service calling a shared external dependency; there's no need to open up
  * to 10 concurrent connections to woolies-mcp for one request.
  */
-export async function rankAlternatives(events: PurchaseEvent[]): Promise<RankedAlternative[]> {
+export async function rankAlternatives(events: PurchaseEvent[]): Promise<RankedAlternativesResult> {
   const window = events.slice(0, HISTORY_WINDOW);
   const candidates = new Map<string, Candidate>();
 
   for (const event of window) {
-    let resolved: WooliesProduct | null;
+    let resolved: WooliesProductFull | null;
     try {
-      resolved = await searchTopProduct(event.product_name as string);
+      resolved = await searchTopProductFull(event.product_name as string);
     } catch {
       // A genuine connection/protocol failure resolving this one historical
       // name -- treated the same as "no longer in the catalogue" (skip this
@@ -53,12 +62,15 @@ export async function rankAlternatives(events: PurchaseEvent[]): Promise<RankedA
     }
   }
 
-  return [...candidates.values()]
-    .sort((a, b) => {
-      if (b.frequency !== a.frequency) return b.frequency - a.frequency;
-      // Tiebreaker only: more recent first.
-      return a.mostRecentDate < b.mostRecentDate ? 1 : a.mostRecentDate > b.mostRecentDate ? -1 : 0;
-    })
-    .slice(0, MAX_ALTERNATIVES)
-    .map((c) => ({ name: c.product.name, sku: c.product.sku, price: c.product.price }));
+  const ranked = [...candidates.values()].sort((a, b) => {
+    if (b.frequency !== a.frequency) return b.frequency - a.frequency;
+    // Tiebreaker only: more recent first.
+    return a.mostRecentDate < b.mostRecentDate ? 1 : a.mostRecentDate > b.mostRecentDate ? -1 : 0;
+  });
+
+  const top = ranked.slice(0, MAX_ALTERNATIVES);
+  return {
+    candidates: top.map((c) => ({ name: c.product.name, sku: c.product.sku, price: c.product.price })),
+    topPickFull: top[0]?.product ?? null,
+  };
 }

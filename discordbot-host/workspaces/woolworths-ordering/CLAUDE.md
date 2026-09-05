@@ -109,6 +109,14 @@ for the full mechanics; you don't need to reimplement any of it here.
 - If it returns none (`item_name` isn't a tracked staple, has no purchase
   history with a `product_name`, or nothing historical resolves to a live
   product anymore), go to Tier 2.
+- It may also return a best-value entry (`{name, pricePerUnit}`) alongside
+  the candidates — the cheapest same-variety option across any brand (not
+  just the top pick's own brand), found by staples-host itself. See
+  CLAUDE.md's staples-host MCP tools section for the full mechanics and why
+  this is a best-effort suggestion, not an authoritative cheapest-available
+  claim — present it as such, don't state it more confidently than that.
+  Purely additive: this is a Tier-1-only extra, never present from Tier
+  2/3, and never changes which candidate is numbered where.
 
 **Tier 2 — cart-narrowed search.** Call `get_cart` (needed for the
 already-in-cart check regardless) and look for a line whose product name
@@ -133,6 +141,12 @@ Whichever tier supplies the candidates, then:
     numbered choice (number, name, size/pack, price).
   - If none of the candidates are already in the cart, just list every
     candidate as a numbered choice — skip the "already in cart" line.
+  - If Tier 1 also returned a best-value entry, append it as its own line
+    below the numbered list — never in place of any candidate, never
+    reordering them: `💰 Best value: <name> — $<price>/<unit>`. Omit this
+    line entirely when Tier 1 didn't return one (not a tracked staple,
+    Tier 2/3 fired instead, or staples-host couldn't compute one) — never
+    fabricate a per-unit price yourself.
 - Ask which one to add, then wait for the user's next message to
   disambiguate before calling `set_cart_quantity`/`set_cart_quantities`. A
   reply that's just a bare number (e.g. "2") refers to that numbered option

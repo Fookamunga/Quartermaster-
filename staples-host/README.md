@@ -228,6 +228,39 @@ fully resolved and ready to present — or an empty list (never a guess) if
 (discontinued/delisted products are dropped individually, not treated as a
 failure of the whole call).
 
+**Best-value entry** (`src/bestValue.ts`): once the top-ranked candidate
+resolves, one further search compares it against the same *variety* —
+any brand, e.g. all Edam cheese, not narrowed to the top pick's own brand.
+The variety query is derived deterministically from the top pick's own
+`name`/`brand` (strip the brand and a trailing size like `500g`, e.g.
+"Mainland Cheese Edam 500g" → "Cheese Edam") — no new tool parameter, no
+dependence on the agent extracting a good search term. Follows
+`search_products` pagination (`searchAllPages` in `wooliesClient.ts`, capped
+at 5 pages as a safety net) until `complete: true` — confirmed live this is
+typically 1-2 pages for a variety query, not the dozens a bare generic term
+would need.
+
+**This is a best-effort suggestion, not an authoritative cheapest-available
+claim, and is documented as such rather than presented more confidently.**
+Two real, unfixed limitations: (1) re-opening a variety-wide search reopens
+the same `coverage`-checking cost the narrower same-`slug` design would have
+avoided — accepted deliberately, since a same-brand-only comparison misses
+real cross-brand savings (confirmed live: the true cheapest Edam was a
+different brand than the resolved top pick). (2) A variety search's results
+mix genuinely comparable products with superficially similar ones that
+happen to share words — confirmed live, "edam cheese" returned 5 "Cheese
+Snack Crackers & Edam" combo products alongside 18 real cheese products, all
+sharing the identical `department`, so that field can't filter them. The
+only lever is a short, conservative name-based exclusion heuristic
+(`SUSPECT_WORDS` in `bestValue.ts` — "cracker", "snack", etc., excluded only
+when absent from the top pick's own name) — not exhaustive category
+detection, and a mispriced product in some other category could still slip
+through uncaught. Parses each surviving candidate's `unitPrice`, groups by
+denomination (varies by product), and returns the cheapest within the
+largest same-denomination group as `{name, pricePerUnit}` — omitted
+entirely (never guessed) if the top pick has no parseable `unitPrice`, the
+variety search finds nothing, or nothing survives the exclusion heuristic.
+
 ## Fuzzy matching
 
 `get_item`, `record_purchase`, `filter_staples`, `ingest_receipt`,
