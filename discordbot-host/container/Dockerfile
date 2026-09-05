@@ -18,7 +18,17 @@ COPY agent-runner/src ./src
 RUN npm run build
 
 RUN mkdir -p /workspace/group && chown -R node:node /workspace
+
+# Sources the filtered Claude-auth env vars from the mounted /workspace/env-dir
+# (written by containerRunner.ts's buildVolumeMounts) into the process
+# environment before running node -- without this, CLAUDE_CODE_OAUTH_TOKEN/
+# ANTHROPIC_API_KEY are mounted as a file but never actually reach the
+# process, and Claude Code fails with "Not logged in".
+RUN printf '#!/bin/bash\nset -e\n[ -f /workspace/env-dir/env ] && export $(cat /workspace/env-dir/env | xargs)\nexec node /app/dist/index.js\n' > /app/entrypoint.sh \
+    && chmod +x /app/entrypoint.sh \
+    && chown node:node /app/entrypoint.sh
+
 USER node
 WORKDIR /workspace/group
 
-ENTRYPOINT ["node", "/app/dist/index.js"]
+ENTRYPOINT ["/app/entrypoint.sh"]

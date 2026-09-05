@@ -64,6 +64,7 @@ async function handleMessage(message: Message): Promise<void> {
   }
   const prompt = promptParts.join("\n\n");
 
+  const receivedAt = Date.now();
   logger.info("Processing message", { channelKey, channelId: message.channelId });
   await sendChannelMessage(channelKey, "I am looking into that").catch((err) =>
     logger.error("Failed to send acknowledgment", { err: String(err) }),
@@ -77,13 +78,14 @@ async function handleMessage(message: Message): Promise<void> {
   }
 
   if (output.status === "error") {
-    logger.error("Container agent error", { channelKey, error: output.error });
+    logger.error("Container agent error", { channelKey, error: output.error, elapsedMs: Date.now() - receivedAt });
     await sendChannelMessage(channelKey, `Something went wrong: ${output.error}`).catch(() => {});
     return;
   }
 
   if (output.result) {
     await sendChannelMessage(channelKey, output.result);
+    logger.info("Reply sent", { channelKey, elapsedMs: Date.now() - receivedAt });
   }
 
   // Only woolworths-ordering uses the propose/confirm flow -- order-import
