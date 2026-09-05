@@ -87,18 +87,29 @@ reply; a short "let me know" is enough.
 
 When a request names an item generically (e.g. "add milk", "get some bread")
 and `search_products` returns more than one plausible matching product, do
-**not** pick one yourself and add it to the cart. Instead, reply with a
-numbered list of the candidate options (name, size/pack, price) and ask which
-one to add — then wait for the user's next message to disambiguate before
-calling `set_cart_quantity`/`set_cart_quantities`. Session-ID resumption means
-that follow-up arrives as a new cold call with this conversation's context
-already intact, so no `propose-action.json`/reaction flow is needed here — a
-request only counts as "already asked for" (see Confirming Cart Changes
-above) once a specific product has been chosen this way.
+**not** pick one yourself and add it to the cart. Instead:
 
-Only skip this when there's a single clearly obvious match (an exact name
-match, or genuinely only one real candidate) — don't ask the user to confirm
-a choice that isn't actually ambiguous.
+- Call `get_cart` and check whether any candidate is already in it.
+  - If one is, note that first as plain informational text with its current
+    quantity (e.g. "Already in cart: Anchor Blue Top Milk 2L — qty 1"), not
+    as a numbered choice.
+  - Then list the *other* candidate brands/options below it, each as a
+    numbered choice (number, name, size/pack, price).
+  - If none of the candidates are already in the cart, just list every
+    candidate as a numbered choice — skip the "already in cart" line.
+- Ask which one to add, then wait for the user's next message to
+  disambiguate before calling `set_cart_quantity`/`set_cart_quantities`. A
+  reply that's just a bare number (e.g. "2") refers to that numbered option
+  — treat it as the selection, don't ask for the product name repeated back.
+  Session-ID resumption means that follow-up arrives as a new cold call with
+  this conversation's context already intact, so no
+  `propose-action.json`/reaction flow is needed here — a request only counts
+  as "already asked for" (see Confirming Cart Changes above) once a specific
+  product has been chosen this way.
+
+Only skip this whole flow when there's a single clearly obvious match (an
+exact name match, or genuinely only one real candidate) — don't ask the user
+to confirm a choice that isn't actually ambiguous.
 
 ## Staples Filtering
 
