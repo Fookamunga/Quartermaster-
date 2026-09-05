@@ -93,11 +93,15 @@ generic term against the full catalogue returns mostly noise (e.g. "cheese"
 alone surfaces ~475 matches) — source the candidate list through this
 three-tier fallback instead, using whichever tier actually produces results:
 
-Every tier below produces a **top pick** (the one candidate to lead with,
-marked ✅) plus zero or more **other candidates** (numbered). This
-distinction is explicit regardless of which tier fires — see the rendering
-rules after the tiers for exactly how to show and how to let the user
-select it.
+**Only Tier 1 ever produces a ✅-marked top pick.** It's backed by a real
+signal — genuine purchase frequency for this household — that justifies
+calling one candidate out ahead of the rest. Tier 2 and Tier 3 have no such
+signal: they're just whatever `search_products` happened to return first
+for a narrowed or bare search, which is not a basis for implying a
+recommendation. Marking one anyway would overstate a confidence that isn't
+there — so Tier 2/3 always render as a plain numbered list, nothing marked,
+nothing implied. See the rendering rules after the tiers for exactly how
+each case looks.
 
 **Tier 1 — purchase history.** Call
 `mcp__staples__suggest_alternatives(item_name: <generic term>)`. It handles
@@ -136,54 +140,63 @@ Edam 500g"). If found, pull out the distinguishing brand/variety words from
 that line's name (e.g. "edam cheese", not the full "Mainland Cheese Edam
 500g") and call `search_products` with that narrower query instead of the
 bare generic term. If nothing in the cart plausibly matches the request
-either, go to Tier 3. **Top pick here is `search_products`' own first
-result** — the site's own top relevance match for your narrowed query, not
-a purchase-history-backed ranking; still worth marking (it's the search
-engine's own best guess), just not as strong a signal as Tier 1's.
+either, go to Tier 3. No top pick here — `search_products`' result order is
+the site's own relevance ranking, not a household-specific signal; present
+every result as a plain numbered candidate, none marked.
 
 **Tier 3 — today's broad search (last resort).** Call
-`search_products(query: <generic term>)` unnarrowed, exactly as before.
-**Top pick here is likewise `search_products`' own first result** — for a
-bare generic term (e.g. "cheese", ~475 matches) this is the weakest of the
-three signals, essentially arbitrary relevance-ranking rather than anything
-tailored to this household. Still mark it ✅ for consistency (the user
-asked for this to apply "regardless of tier"), but don't oversell it in
-your own phrasing.
+`search_products(query: <generic term>)` unnarrowed, exactly as before. No
+top pick here either, for the same reason — for a bare generic term (e.g.
+"cheese", ~475 matches) the site's own first result is essentially
+arbitrary relevance-ranking, not anything tailored to this household.
+Present every result as a plain numbered candidate.
 
-## Rendering the top pick and other candidates
+## Rendering the candidates
 
-Whichever tier supplies them:
+Call `get_cart` (if you haven't already, from Tier 2) and check whether any
+candidate is already in it. Two cases, depending on whether Tier 1 actually
+produced a `top_pick`:
 
-- Call `get_cart` (if you haven't already, from Tier 2) and check whether
-  `top_pick` or any other candidate is already in it.
-- **✅ line, always first, one of two forms:**
+**Tier 1 fired (`top_pick` is non-null) — ✅ marker used:**
+- ✅ line, always first, one of two forms:
   - `top_pick` not in cart: `✅ <name> — $<price>`
   - `top_pick` already in cart: `✅ Already in cart: <name> — qty <N>`
     (merge the two signals into one line rather than showing both
     separately)
 - If a candidate *other than* `top_pick` is already in the cart, note that
-  next as its own plain-text line (unchanged from before): `Already in
-  cart: <name> — qty <N>` — not as a numbered choice.
-- Then list the remaining `other_candidates` below that, each as a
-  numbered choice starting at 1 (number, name, size/pack, price). These
-  numbers never include `top_pick` — it's the ✅ line, not "#1".
-- If Tier 1 also returned a best-value entry, append it as its own line
-  after the numbered list — never in place of `top_pick` or any numbered
+  next as its own plain-text line: `Already in cart: <name> — qty <N>` —
+  not as a numbered choice.
+- Then list the remaining `other_candidates` below that, each as a numbered
+  choice starting at 1 (number, name, size/pack, price). These numbers
+  never include `top_pick` — it's the ✅ line, not "#1".
+- If a best-value entry was also returned, append it as its own line after
+  the numbered list — never in place of `top_pick` or any numbered
   candidate, never reordering them: `💰 Best value: <name> —
-  $<price>/<unit>`. Omit this line entirely when Tier 1 didn't return one
-  (not a tracked staple, Tier 2/3 fired instead, or staples-host couldn't
-  compute one) — never fabricate a per-unit price yourself.
+  $<price>/<unit>`. Never fabricate a per-unit price yourself.
 - **Selecting one:** an affirmative reply ("yes", "sounds good", "add it",
   "sure", or similar) selects `top_pick`. A bare number (e.g. "2") selects
-  that position in the numbered `other_candidates` list — treat it as the
-  selection, don't ask for the product name repeated back. Either way, wait
-  for the user's next message before calling
-  `set_cart_quantity`/`set_cart_quantities`. Session-ID resumption means
-  that follow-up arrives as a new cold call with this conversation's
-  context already intact, so no `propose-action.json`/reaction flow is
-  needed here — a request only counts as "already asked for" (see
-  Confirming Cart Changes above) once a specific product has been chosen
-  this way.
+  that position in the numbered list.
+
+**Tier 2 or Tier 3 fired instead (no `top_pick` at all) — plain list, no
+marker:**
+- If any candidate is already in the cart, note it as plain text first:
+  `Already in cart: <name> — qty <N>` — not as a numbered choice.
+- List every other candidate as a numbered choice starting at 1. No ✅
+  anywhere, no candidate singled out, no best-value line (that's a Tier-1-
+  only extra — Tier 2/3 never produce one).
+- **Selecting one:** a bare number selects that position in the list. There
+  is no "recommended" option to affirm into — every candidate is presented
+  with equal weight, so ask which one plainly rather than implying you'd
+  lead with any particular choice.
+
+Either way: wait for the user's next message before calling
+`set_cart_quantity`/`set_cart_quantities` — treat the reply as the
+selection, don't ask for the product name repeated back. Session-ID
+resumption means that follow-up arrives as a new cold call with this
+conversation's context already intact, so no `propose-action.json`/reaction
+flow is needed here — a request only counts as "already asked for" (see
+Confirming Cart Changes above) once a specific product has been chosen this
+way.
 
 Only skip this whole flow when there's a single clearly obvious match (an
 exact name match, or genuinely only one real candidate) — don't ask the user
