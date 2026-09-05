@@ -63,3 +63,54 @@ export const NEVER_TRACKED_CHECK_INTERVAL_MS = parseInt(
 );
 export const NEVER_TRACKED_TEST_MODE =
   process.env.NEVER_TRACKED_TEST_MODE === "true";
+
+// --- Warm-session (persistent worker) config ------------------------------
+//
+// Per-channel opt-in, mirroring the nanoclaw `containerConfig.persistentWorker`
+// pattern: default OFF everywhere. Only woolworths-ordering ever reaches an
+// agent session at all (cold or warm) -- order-import is a pure relay and
+// never consults this. See CLAUDE.md's warm-session section and
+// src/warmSession.ts for the implementation lessons this applies from the
+// nanoclaw investigation (health-check-must-deliver-a-prompt-first, generous
+// MCP timeouts).
+export const WOOLWORTHS_ORDERING_PERSISTENT_WORKER =
+  process.env.WOOLWORTHS_ORDERING_PERSISTENT_WORKER === "true";
+
+// Per-MCP-server tool-call timeout for warm sessions, in ms. Covers the
+// fresh-connection handshake a warm session's first tool call to
+// woolies-mcp/staples-host makes after (re)start. nanoclaw's own bridge
+// shipped with 20s and had to be bumped to 35s after a *real* (not
+// synthetic) failure -- start generous here instead of re-deriving that the
+// hard way. Deliberately not the arbitrary SDK default.
+export const WARM_MCP_TOOL_TIMEOUT_MS = parseInt(
+  process.env.WARM_MCP_TOOL_TIMEOUT_MS || "40000",
+  10,
+);
+
+// How long a warm-session health check waits for its (real, not just a
+// signal-wait) round trip prompt to come back. Generously above
+// WARM_MCP_TOOL_TIMEOUT_MS since the ping may itself involve a tool call
+// plus model latency on top of the connection handshake.
+export const WARM_HEALTH_CHECK_TIMEOUT_MS = parseInt(
+  process.env.WARM_HEALTH_CHECK_TIMEOUT_MS || "90000",
+  10,
+);
+
+// How long a normal (non-health-check) warm-session prompt waits for its
+// result before being treated as failed. Real shopping requests can chain
+// several tool calls in one turn, so this is longer than the health-check
+// budget.
+export const WARM_PROMPT_TIMEOUT_MS = parseInt(
+  process.env.WARM_PROMPT_TIMEOUT_MS || "180000",
+  10,
+);
+
+// Optional periodic refresh (tear down + restart, via the same
+// deliver-a-prompt-then-check-health path as crash recovery) while a warm
+// session stays up. 0 (default) disables this -- there's no evidence yet
+// that Quartermaster's warm sessions need it, and it's easy to turn on once
+// real usage surfaces a reason.
+export const WARM_SESSION_REFRESH_INTERVAL_MS = parseInt(
+  process.env.WARM_SESSION_REFRESH_INTERVAL_MS || "0",
+  10,
+);

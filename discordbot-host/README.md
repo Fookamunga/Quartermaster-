@@ -1,11 +1,12 @@
 # discordbot-host
 
 Persistent Discord gateway for Quartermaster. Watches two existing channels —
-`#woolworths-ordering` and `#order-import` — and spins up a short-lived,
-cold, one-shot Claude Code container per message. See the repo root
-[CLAUDE.md](../CLAUDE.md) for the full architecture and non-negotiable
-constraint (no warm/streaming session ever gets an MCP server registered),
-and [DEPLOYMENT.md](../DEPLOYMENT.md) for the NAS deploy target.
+`#woolworths-ordering` and `#order-import` — and, by default, spins up a
+short-lived, cold, one-shot Claude Code container per message. A per-channel
+flag can switch `#woolworths-ordering` to a warm, persistent Agent SDK
+session instead (off by default — see "Warm mode" below). See the repo root
+[CLAUDE.md](../CLAUDE.md) for the full architecture, and
+[DEPLOYMENT.md](../DEPLOYMENT.md) for the NAS deploy target.
 
 Built fresh, not a patch of the old nanoclaw-discord codebase — that was read
 on the NAS for reference (the `docker run` stdin/stdout sentinel pattern,
@@ -82,12 +83,9 @@ only ever runs for `#woolworths-ordering`; `#order-import` is a pure relay
 and its own `.claude` session directory keep that channel's conversations
 and Claude Code session state isolated.
 
-**Why this doesn't hit the non-negotiable constraint's bug:** the container
-process runs `query()` exactly once and exits — the failure mode CLAUDE.md
-describes is specifically a *warm* session (`query()` + `resume` kept alive
-across turns *within one process*) with an MCP server registered. `resume`
-across separate cold container invocations (one process each) is the
-explicitly-fine case.
+The container process runs `query()` exactly once and exits. `resume` across
+separate cold container invocations (one process each) always works this
+way. See "Warm mode" below for the other option, and its own caveats.
 
 ## Propose/confirm flow
 
@@ -160,8 +158,104 @@ Both poll directly (no agent involved) and post to `#woolworths-ordering`:
   also run one check immediately on startup, to verify without waiting up
   to 6h for real data.
 
+## Warm mode (off by default, one channel only)
+
+`#woolworths-ordering` can optionally run a warm, persistent Claude Agent
+SDK session instead of a fresh cold container per message —
+`WOOLWORTHS_ORDERING_PERSISTENT_WORKER=true` in `.env` (default `false`).
+`src/agentDispatch.ts` picks cold vs. warm per message; `src/warmSession.ts`
+holds the actual implementation. `#order-import` never reaches either path
+(it's a pure relay — see above), so this flag has no effect there.
+
+This used to be flatly prohibited (see CLAUDE.md's git history) after a
+related project, nanoclaw-discord, spent an extended investigation
+believing a warm/streaming Agent SDK session was blocked by an unfixable
+upstream SDK defect — reproduced hanging indefinitely across ~130 SDK
+versions, with zero custom MCP tools, using a purely local in-process MCP
+server. It turned out to be two bugs in nanoclaw's own application code,
+not the SDK:
+
+1. A health check that polled for warm-worker health without ever
+   delivering a prompt first. Structurally guaranteed to hang: the SDK's
+   streaming-input generator only produces messages in response to
+   something written to the async-iterable it's blocked reading from, and
+   a bare wait for a signal like `system`/`init` will hang forever whether
+   or not anything else is wrong. (This alone explains the ~130-version,
+   zero-MCP-tools reproduction — a check that can never pass fails
+   identically regardless of SDK version or tool config.)
+2. An MCP-call bridge with too short a timeout (20s) for a fresh connection
+   handshake under real network conditions — only surfaced as a live
+   failure once bug 1 was fixed and warm sessions actually started running.
+
+`src/warmSession.ts`'s file header and inline comments point at exactly
+where each fix lives:
+
+- **Health checks always deliver a prompt first.** The only health-check
+  entry point (`healthCheck()`) pushes a real, lightweight synthetic prompt
+  (`HEALTH_CHECK_PROMPT`) and waits for its actual result — never a bare
+  signal wait. This applies uniformly to first startup, crash recovery, and
+  any future periodic refresh, since they all route through the same
+  `restartWarmSession()` path.
+- **Generous, explicitly-reasoned timeouts**, not SDK defaults —
+  `WARM_MCP_TOOL_TIMEOUT_MS` (default 40s, comfortably above nanoclaw's
+  eventual 35s), `WARM_HEALTH_CHECK_TIMEOUT_MS` (90s, above the MCP timeout
+  since a health check may itself trigger a tool call plus model latency on
+  top of the handshake), and `WARM_PROMPT_TIMEOUT_MS` (180s, for real
+  multi-tool-call turns). All configurable in `.env.example`.
+- **Full tool surface, no restriction.** A warm session registers
+  `woolies`/`staples` as normal remote HTTP MCP servers (`warmMcpServers()`)
+  — the same servers, same `allowedTools`, as the cold path. There's no
+  separate zero-MCP bridge architecture; that workaround (built by nanoclaw
+  before the real bug was found) was real but unnecessary once the actual
+  root cause was fixed.
+- **Scoped per channel, not fleet-wide.** `WOOLWORTHS_ORDERING_PERSISTENT_WORKER`
+  gates only that one channel; `agentDispatch.ts`'s `isPersistentWorkerEnabled()`
+  is the single place this is decided, mirroring nanoclaw's
+  `containerConfig.persistentWorker` pattern.
+- **Restart path is one path, whatever the trigger.** `forceRestartWarmSession()`
+  (manual/periodic) and the consumer loop's own crash handler both call the
+  same `restartWarmSession()`, which always re-runs the deliver-prompt-then-health-check
+  sequence before declaring the fresh session usable — this is deliberate:
+  it's the exact path that caught nanoclaw's bug 1, so it shouldn't have a
+  second, less-tested variant.
+
+**Still unproven — flagging this clearly rather than claiming success:**
+Quartermaster has no real Discord traffic yet, so none of this has been
+exercised under sustained real usage — only synthetically:
+
+- The health check and restart path have only been run manually
+  (`ensureWarmSession`/`forceRestartWarmSession` called directly, and the
+  consumer loop's crash branch exercised by killing the underlying process
+  by hand), never triggered by an actual crash under real load or an actual
+  periodic-refresh timer firing in production (which is disabled by
+  default — `WARM_SESSION_REFRESH_INTERVAL_MS=0`).
+- The timeout values (40s/90s/180s) are sized from nanoclaw's own
+  after-the-fact numbers and general judgment, not from Quartermaster's own
+  observed latency against woolies-mcp/staples-host over real Tailscale
+  Funnel round trips — that data doesn't exist yet.
+- In principle, the same category of bug that hit nanoclaw — a check that
+  can never pass, a timeout that's fine synthetically but too tight under
+  real network conditions — could still be lurking here until it's
+  actually exercised by real messages over a real period of time. Don't
+  treat this section as proof warm mode works; treat it as "built
+  correctly against known lessons, pending the field test."
+
+**Recommended pilot plan**, once Quartermaster has real usage: enable
+`WOOLWORTHS_ORDERING_PERSISTENT_WORKER=true` there first — it's the only
+channel that reaches an agent session at all (cold or warm), so it's the
+only one warm mode can apply to yet, making the "pilot on one channel"
+question already answered by the architecture rather than a real choice
+between two candidates. Watch for the auth-failure and Never-tracked
+sentries continuing to fire normally (they poll host-side, independent of
+warm/cold) and for the periodic-refresh path being worth turning on only if
+a real staleness/memory issue actually shows up under sustained use — don't
+enable it pre-emptively.
+
 ## Known gaps
 
+- Warm mode (`WOOLWORTHS_ORDERING_PERSISTENT_WORKER`) is built but only
+  synthetic-tested — see "Warm mode" above for exactly what that does and
+  doesn't prove. Defaults to off.
 - The due/overdue nudge into `#woolworths-ordering` mentioned in CLAUDE.md's
   Trigger section isn't built yet — only the auth-failure and Never-tracked
   sentries are.

@@ -2,8 +2,9 @@ import { execSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Events, type Message } from "discord.js";
-import { WORKSPACES_DIR } from "./config.js";
-import { ensureWorkspaceDirs, runContainerAgent, takeProposedAction } from "./containerRunner.js";
+import { isPersistentWorkerEnabled, runAgent } from "./agentDispatch.js";
+import { WARM_SESSION_REFRESH_INTERVAL_MS, WORKSPACES_DIR } from "./config.js";
+import { ensureWorkspaceDirs, takeProposedAction } from "./containerRunner.js";
 import { connectDiscord, getChannelKeyForId, sendChannelMessage } from "./discord.js";
 import { logger } from "./logger.js";
 import { startNeverTrackedSentry } from "./neverTrackedSentry.js";
@@ -13,7 +14,10 @@ import { ingestOrderText } from "./orderImportText.js";
 import { handlePendingActionReaction, postAndTrackAction } from "./pendingActions.js";
 import { getSessionId, saveSessionId } from "./sessions.js";
 import type { ChannelKey } from "./types.js";
+import { ensureWarmSession, forceRestartWarmSession } from "./warmSession.js";
 import { startWooliesHealthSentry } from "./wooliesHealthSentry.js";
+
+const WARM_SESSION_CHANNELS: ChannelKey[] = ["woolworths-ordering"];
 
 function ensureDockerRunning(): void {
   try {
@@ -122,7 +126,7 @@ async function handleMessage(message: Message): Promise<void> {
   const prompt = promptParts.join("\n\n");
 
   const sessionId = getSessionId(channelKey);
-  const output = await runContainerAgent(channelKey, prompt, sessionId);
+  const output = await runAgent(channelKey, prompt, sessionId);
 
   if (output.newSessionId) {
     saveSessionId(channelKey, output.newSessionId);
@@ -147,8 +151,48 @@ async function handleMessage(message: Message): Promise<void> {
   }
 }
 
+// woolworths-ordering is the only channel that can ever reach an agent
+// session, cold or warm (order-import is a pure relay, see
+// handleOrderImportMessage). Docker is only needed for the cold path, so a
+// channel fully switched to warm mode doesn't need it -- but since
+// WOOLWORTHS_ORDERING_PERSISTENT_WORKER defaults to false, Docker stays
+// required in practice until that flag is flipped on.
+function coldPathInUse(): boolean {
+  return !isPersistentWorkerEnabled("woolworths-ordering");
+}
+
+async function startConfiguredWarmSessions(): Promise<void> {
+  for (const channelKey of WARM_SESSION_CHANNELS) {
+    if (!isPersistentWorkerEnabled(channelKey)) continue;
+    logger.info("Starting warm session at boot", { channelKey });
+    const healthy = await ensureWarmSession(channelKey);
+    if (!healthy) {
+      logger.error(
+        "Warm session failed its startup health check -- messages to this channel will fail until it recovers",
+        { channelKey },
+      );
+    }
+  }
+}
+
+function startWarmSessionRefreshLoop(): void {
+  if (WARM_SESSION_REFRESH_INTERVAL_MS <= 0) return;
+  for (const channelKey of WARM_SESSION_CHANNELS) {
+    if (!isPersistentWorkerEnabled(channelKey)) continue;
+    setInterval(() => {
+      forceRestartWarmSession(channelKey, "periodic refresh").catch((err) =>
+        logger.error("Periodic warm session refresh failed", { channelKey, err: String(err) }),
+      );
+    }, WARM_SESSION_REFRESH_INTERVAL_MS);
+    logger.info("Warm session periodic refresh scheduled", {
+      channelKey,
+      intervalMs: WARM_SESSION_REFRESH_INTERVAL_MS,
+    });
+  }
+}
+
 async function main(): Promise<void> {
-  ensureDockerRunning();
+  if (coldPathInUse()) ensureDockerRunning();
   ensureWorkspaceDirs();
 
   const client = await connectDiscord();
@@ -165,6 +209,8 @@ async function main(): Promise<void> {
 
   startWooliesHealthSentry();
   startNeverTrackedSentry();
+  await startConfiguredWarmSessions();
+  startWarmSessionRefreshLoop();
 
   logger.info("discordbot-host running");
 }

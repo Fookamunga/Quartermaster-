@@ -4,20 +4,62 @@ Household-ops assistant: a Discord bot + a set of MCP servers that manage grocer
 staples and Woolworths NZ ordering. This file is the project brief for Claude Code —
 read it fully before making changes.
 
-## Non-negotiable constraint
+## Warm sessions: allowed, but scoped and built to a specific checklist
 
-**Never build a warm/streaming Claude Agent SDK session (`query()` + `resume` kept
-alive across turns) that has any MCP server registered in its own startup config.**
-This hangs indefinitely — confirmed as an upstream Agent SDK defect, reproduced with
-zero woolies tools, a purely local in-process MCP server, and across ~130 SDK
-versions (0.2.29 → 0.3.260). Not fixable from our side. Every Claude Code invocation
-in this project must be a **cold, one-shot session** (`--resume <id>` for
-conversation continuity across separate cold calls is fine — that's not the same
-thing as keeping one session process alive).
+Earlier revisions of this file flatly prohibited any warm/streaming Claude Agent
+SDK session (`query()` + `resume` kept alive across turns) that had an MCP server
+registered, believing it hung indefinitely as an unfixable upstream Agent SDK
+defect — reproduced with zero woolies tools, a purely local in-process MCP server,
+across ~130 SDK versions. A related project (nanoclaw-discord) ran that investigation
+to ground: it was two fixable bugs in *application* code, not the SDK —
+
+1. A health check that polled for warm-worker health without ever delivering a
+   prompt first, structurally guaranteed to hang (this alone explains the
+   ~130-version, zero-MCP-tools reproduction: a check that can never pass fails
+   the same way regardless of SDK version or tool config).
+2. An MCP-call bridge timeout (20s) too short for a fresh connection handshake
+   under real network conditions — only surfaced once bug 1 was fixed.
+
+**Any warm/streaming session built in this project must satisfy every item below.**
+The default everywhere is still cold, one-shot sessions (`--resume <id>` across
+separate cold calls, not a kept-alive process) — warm mode is an explicit,
+per-channel/group opt-in, never a fleet-wide switch:
+
+- **Health checks always deliver a real (or lightweight synthetic) prompt before
+  checking session health.** Never wait on a signal like `system`/`init` alone —
+  the SDK's streaming-input generator only produces messages in response to
+  something written to the async-iterable it's blocked reading from.
+- **Timeouts sized generously from observed latency, not arbitrary defaults** —
+  in particular, MCP tool calls that establish a fresh connection (e.g. to
+  woolies-mcp or staples-host) need a timeout comfortably above realistic
+  real-world API round-trip time. nanoclaw's own bridge started at 20s and had
+  to be bumped to 35s after a real failure; don't re-derive that the hard way —
+  start at 35-45s for any first-call-after-restart scenario.
+- **Full custom-tool surface allowed, including MCP servers** — no need to strip
+  MCP registration from a warm session or build a separate zero-MCP bridge
+  architecture; that was a real but unnecessary workaround built before the
+  actual bug was found.
+- **Scoped per channel/group behind an explicit config flag**, defaulting to
+  off, mirroring nanoclaw's `containerConfig.persistentWorker` pattern — so a
+  real, previously-unseen issue can be isolated to one channel instead of
+  forcing an all-or-nothing rollback.
+- **Restart/staleness-recovery paths follow the same deliver-a-prompt-then-check-health
+  pattern** as the initial health check, and should be deliberately exercised
+  against their real trigger condition once live, not just a manual one-off test —
+  that's specifically what caught bug 1 in nanoclaw.
+
+discordbot-host's `#woolworths-ordering` channel is the only place this is built
+out so far (`src/warmSession.ts`, `src/agentDispatch.ts`), and only synthetic/
+manual-triggered so far — no real Discord traffic has exercised it yet. See that
+package's README "Warm mode" section for the full detail and what's still
+unproven; `src/warmSession.ts`'s file header maps each checklist item above to
+exactly where it's implemented.
 
 ## Architecture
 
-Three plain Docker containers, none running the Agent SDK's warm mode:
+Three plain Docker containers. All default to cold, one-shot Claude Code
+invocations; `discordbot-host` alone can optionally run a warm session for
+`#woolworths-ordering`, off by default (see above):
 
 ### 1. woolies-mcp (reuse, do not modify)
 Already deployed and working. Owns Woolworths NZ login and all cart/order actions.
@@ -274,8 +316,10 @@ guild's channels), never creates either.
   itself.
 
 **Drop:**
-- Any warm/streaming session code path — nothing should keep a Claude session
-  process alive between messages
+- The old nanoclaw-discord warm/streaming session code path specifically —
+  it carried the two bugs described in "Warm sessions" above. Don't patch or
+  reuse it; discordbot-host's own warm-session path (`src/warmSession.ts`,
+  opt-in, off by default) was built fresh against that checklist instead.
 - The old local IPC MCP server used to route custom tools into a warm session —
   move tools either into the cold session's own MCP config, or into discordbot-host
   as plain host-side functions if they don't actually need Claude in the loop
@@ -286,7 +330,10 @@ guild's channels), never creates either.
   `run_staples_order_now`-equivalent for testing
 
 **Latency:** ~1.5 min/message is the accepted cost of staying cold with the full
-tool surface intact. Not a target to optimize away.
+tool surface intact, and remains the default everywhere. Not a target to optimize
+away by itself — but if `#woolworths-ordering` is switched to warm mode (see
+"Warm sessions" above), expect roughly 9-61s/message instead once a warm session
+is up, per nanoclaw's own measurements with the bugs fixed.
 
 ## Open items to confirm before/during build
 - Shape of the fixed order-history API (fields, pagination, date format) — gates
