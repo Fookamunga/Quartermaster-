@@ -1,7 +1,8 @@
+import { timingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
-import { PORT } from "./config.js";
+import { MCP_AUTH_TOKEN, PORT } from "./config.js";
 import { registerFilterStaples } from "./tools/filterStaples.js";
 import { registerGetItem } from "./tools/getItem.js";
 import { registerIngestOrderText } from "./tools/ingestOrderText.js";
@@ -62,7 +63,34 @@ app.get("/healthz", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/mcp", async (req, res) => {
+if (!MCP_AUTH_TOKEN) {
+  console.error(
+    "MCP_AUTH_TOKEN is not set -- every /mcp/<token> request will be rejected. " +
+      "Set MCP_AUTH_TOKEN to a random secret before exposing this over Funnel.",
+  );
+}
+
+// Constant-time compare so a wrong-length or wrong-content token takes the
+// same time either way -- avoids leaking the correct token length/prefix via
+// response timing.
+function tokenMatches(candidate: string): boolean {
+  if (!MCP_AUTH_TOKEN) return false;
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(MCP_AUTH_TOKEN);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+// 404 (not 401/403) for a bad token, same as an unknown path -- an internet-
+// wide prober can't tell "wrong token" from "route doesn't exist".
+app.use("/mcp/:token", (req, res, next) => {
+  if (!tokenMatches(req.params.token)) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  next();
+});
+
+app.post("/mcp/:token", async (req, res) => {
   const server = buildServer();
   try {
     const transport = new StreamableHTTPServerTransport({
@@ -86,7 +114,7 @@ app.post("/mcp", async (req, res) => {
   }
 });
 
-app.get("/mcp", (_req, res) => {
+app.get("/mcp/:token", (_req, res) => {
   res.writeHead(405).end(
     JSON.stringify({
       jsonrpc: "2.0",
@@ -96,7 +124,7 @@ app.get("/mcp", (_req, res) => {
   );
 });
 
-app.delete("/mcp", (_req, res) => {
+app.delete("/mcp/:token", (_req, res) => {
   res.writeHead(405).end(
     JSON.stringify({
       jsonrpc: "2.0",

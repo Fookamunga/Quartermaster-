@@ -19,6 +19,15 @@ export const DB_PATH = path.join(DATA_DIR, "db.json");
 
 export const PORT = process.env.PORT ? Number(process.env.PORT) : 8481;
 
+// Secret path segment required on the /mcp/<token> route. ALLOWED_HOSTS below
+// is only a Host-header allowlist (DNS-rebinding protection) -- anyone who
+// knows the Funnel hostname can already send a matching Host header, so it's
+// not real authentication. This token is the actual gate against internet-
+// wide discovery of the Funnel endpoint, mirroring woolies-mcp's /mcp/<token>
+// pattern. No default: an unset token fails closed (see index.ts) rather than
+// silently exposing the endpoint.
+export const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN ?? null;
+
 // Multiplier applied to replenishment_interval_days to distinguish "due"
 // from "overdue". Not specified in the project brief — documented here as a
 // tunable default rather than a hardcoded magic number.
