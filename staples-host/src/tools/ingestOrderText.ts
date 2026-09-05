@@ -59,9 +59,28 @@ export function registerIngestOrderText(server: McpServer): void {
       }
 
       const purchaseDate = date ?? extraction.date ?? todayIso();
-      const reference = raw_ref ?? extraction.invoice_id ?? null;
+      const orderReference = extraction.order_reference;
+      const reference = raw_ref ?? orderReference ?? null;
 
       return withDb((db) => {
+        // order_reference is the primary dedup key: if this order was
+        // already recorded (by either ingest path), skip every line item
+        // rather than re-inserting or partially processing. See CLAUDE.md's
+        // reconciliation section.
+        if (
+          orderReference &&
+          db.purchase_events.some((e) => e.order_reference === orderReference)
+        ) {
+          return toolJson({
+            matched: [],
+            unmatched: [],
+            note:
+              `Already imported — order ${orderReference} has already been ` +
+              `recorded; skipping all ${extraction.items.length} line item(s).`,
+            date: purchaseDate,
+          });
+        }
+
         const matched: { line: string; item_name: string }[] = [];
         const unmatched: string[] = [];
 
@@ -78,6 +97,7 @@ export function registerIngestOrderText(server: McpServer): void {
             date: purchaseDate,
             source: "receipt_scan",
             raw_ref: reference ?? line,
+            order_reference: orderReference,
             created_at: new Date().toISOString(),
           });
 

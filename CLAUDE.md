@@ -88,7 +88,9 @@ queries. Only staples-host touches this volume.
   if stale), replenishment_interval_days (null until enough data), interval_confidence
   (`seeded` | `learned`), status (`not_due` | `due` | `overdue`, default `not_due`)
 - `purchase_events` (append-only): event_id, item_id, date, source (`receipt_scan` |
-  `order_history_api`), raw_ref
+  `order_history_api`), raw_ref, order_reference (order/invoice number, e.g.
+  Woolworths NZ's "Order Confirmation/Invoice Number CD47859895"; null for
+  sources with no invoice number — in-store receipts, handwritten notes)
 - `items.last_purchased` / `last_purchased_source`: denormalized, derived from
   `purchase_events`
 
@@ -98,13 +100,16 @@ queries. Only staples-host touches this volume.
 - `record_purchase(item_name, date, source, raw_ref?)` — fuzzy-match, append event,
   update summary
 - `filter_staples(ingredients: string[])` — which ingredients aren't already-stocked
-- `ingest_receipt(image)` — vision extraction → fuzzy-match → `record_purchase` per
-  line, return unmatched lines
+- `ingest_receipt(image)` — vision extraction (line items + order/invoice
+  reference number, when present) → order_reference dedup check → fuzzy-match →
+  `record_purchase` per line, return unmatched lines. See "Order-reference
+  dedup" below.
 - `ingest_order_text(text, date?, raw_ref?)` — mirrors `ingest_receipt` for pasted
   order-confirmation/order-list text instead of a photo: one-shot text extraction
-  (header date + invoice ID, or a stated date, or today) → fuzzy-match → record
-  per line, return matched/unmatched. Built to close discordbot-host's
-  `#order-import` text-parsing gap — see that section for detail.
+  (header date + order/invoice reference number, or a stated date, or today) →
+  order_reference dedup check → fuzzy-match → record per line, return
+  matched/unmatched. Built to close discordbot-host's `#order-import`
+  text-parsing gap — see that section for detail.
 - `set_interval(item_name, days)` — manual override
 - `sync_from_craft()` — pull Staples list from Craft; add new items, never drop
   items with purchase history
@@ -158,10 +163,27 @@ was introduced during the build as a tunable constant (not specified in this bri
 — confirm its actual configured value, since it controls how much slack an item
 gets before escalating from a soft "due" nudge to an "overdue" alert.
 
-**Reconciliation (once order-history API is fixed):** both sources tag events with
-`source` from day one. Match `receipt_scan` and `order_history_api` events for the
-same item within ~±2 days, merge, treat API as authoritative when both exist.
-Unmatched API events fill gaps, not duplicates.
+**Order-reference dedup (primary, live now):** every purchase event carries an
+`order_reference` — the order/invoice number (e.g. Woolworths NZ's "Order
+Confirmation/Invoice Number CD47859895"), extracted by `ingest_receipt`'s vision
+prompt and `ingest_order_text`'s text-extraction prompt alongside the line items
+and date. Before inserting any line items, ingestion checks whether that
+`order_reference` already exists anywhere in the purchase-event log; if so, the
+entire order is skipped — no line items re-inserted, regardless of source — and
+`"already imported"` is reported rather than silently doing nothing or partially
+processing. This is an exact-match check, not a fuzzy one, and needs no
+reconciliation pass to run: it applies at ingest time, today, for any source
+that exposes an invoice number. Once the order-history API sync exists, this is
+also the primary mechanism for reconciling `receipt_scan` and `order_history_api`
+events for the same order.
+
+**Date-proximity fallback (once order-history API is fixed):** sources with no
+invoice number (in-store receipts, handwritten notes) leave `order_reference`
+null and fall back to this weaker check instead — match `receipt_scan` and
+`order_history_api` events for the same item within ~±2 days, merge, treat API
+as authoritative when both exist. Unmatched API events fill gaps, not
+duplicates. Only used when an exact `order_reference` match isn't possible —
+not an equally-authoritative alternative to it.
 
 ### 3. discordbot-host (rebuild — replaces nanoclaw-host)
 Keep only what a cold, one-shot-per-message architecture needs. This is now a

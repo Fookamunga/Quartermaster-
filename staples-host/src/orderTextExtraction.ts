@@ -4,7 +4,9 @@ import { todayIso } from "./replenishment.js";
 
 export interface OrderTextExtraction {
   date: string | null; // YYYY-MM-DD
-  invoice_id: string | null;
+  // Order/invoice number, e.g. "Order Confirmation/Invoice Number CD47859895".
+  // Reused directly as the purchase-event dedup key -- see ingestOrderText.ts.
+  order_reference: string | null;
   items: string[];
 }
 
@@ -12,7 +14,7 @@ function buildPrompt(referenceDate: string): string {
   return `You are reading pasted grocery order text — either a full order
 confirmation/invoice, or a shorter informal list of items someone bought.
 
-Extract two things:
+Extract three things:
 
 1. A purchase date, if you can determine one, in this priority order:
    a. A header line like "Order Confirmation/Invoice Number <ID> <DD Mon, YYYY>"
@@ -22,7 +24,12 @@ Extract two things:
       ${referenceDate}, and convert to YYYY-MM-DD.
    c. Otherwise, leave date as null (the caller will default it).
 
-2. Every purchased item's plain product name, one per line item. Lines that are
+2. An order/invoice reference number, if present -- from a header line like
+   "Order Confirmation/Invoice Number CD47859895" (the same ID extracted in
+   step 1a, if that header is present). Otherwise null -- an informal list
+   with no such header has no order reference.
+
+3. Every purchased item's plain product name, one per line item. Lines that are
    category/section headers (e.g. "Chocolate, Sweets & Snacks", "Dairy" — no
    leading item reference number or quantity) are NOT items — skip them. Ignore
    price, quantity, SKU, and order/ref-number columns; extract just the product
@@ -31,7 +38,7 @@ Extract two things:
    the way you'd read it yourself.
 
 Respond with ONLY a JSON object of this exact shape, nothing else:
-{"date": "YYYY-MM-DD" or null, "invoice_id": "<id>" or null, "items": ["<item name>", ...]}
+{"date": "YYYY-MM-DD" or null, "order_reference": "<id>" or null, "items": ["<item name>", ...]}
 If you can't find any items, use an empty items array.`;
 }
 
@@ -56,7 +63,7 @@ export async function extractOrderText(text: string): Promise<OrderTextExtractio
 
   const textBlock = response.content.find((b) => b.type === "text");
   if (!textBlock || textBlock.type !== "text") {
-    return { date: null, invoice_id: null, items: [] };
+    return { date: null, order_reference: null, items: [] };
   }
 
   return parseExtraction(textBlock.text);
@@ -64,7 +71,7 @@ export async function extractOrderText(text: string): Promise<OrderTextExtractio
 
 function parseExtraction(text: string): OrderTextExtraction {
   const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return { date: null, invoice_id: null, items: [] };
+  if (!match) return { date: null, order_reference: null, items: [] };
 
   try {
     const parsed = JSON.parse(match[0]);
@@ -77,12 +84,12 @@ function parseExtraction(text: string): OrderTextExtraction {
       typeof parsed.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)
         ? parsed.date
         : null;
-    const invoice_id =
-      typeof parsed.invoice_id === "string" && parsed.invoice_id.trim().length > 0
-        ? parsed.invoice_id
+    const order_reference =
+      typeof parsed.order_reference === "string" && parsed.order_reference.trim().length > 0
+        ? parsed.order_reference
         : null;
-    return { date, invoice_id, items };
+    return { date, order_reference, items };
   } catch {
-    return { date: null, invoice_id: null, items: [] };
+    return { date: null, order_reference: null, items: [] };
   }
 }

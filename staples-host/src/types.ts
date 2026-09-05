@@ -26,6 +26,12 @@ export interface PurchaseEvent {
   date: string; // ISO date (YYYY-MM-DD)
   source: PurchaseSource;
   raw_ref: string | null;
+  // Order/invoice number (e.g. Woolworths NZ's "Order Confirmation/Invoice
+  // Number CD47859895"), when the source exposes one. Primary cross-source
+  // dedup key: null for sources with no invoice number (in-store receipts,
+  // handwritten notes), which fall back to the ±2-day date+item proximity
+  // check in the reconciliation pass instead. See CLAUDE.md.
+  order_reference: string | null;
   created_at: string; // ISO datetime
 }
 

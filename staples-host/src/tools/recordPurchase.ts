@@ -40,6 +40,8 @@ export function registerRecordPurchase(server: McpServer): void {
           date,
           source,
           raw_ref: raw_ref ?? null,
+          // Manual single-item entry has no order to dedup against.
+          order_reference: null,
           created_at: new Date().toISOString(),
         };
         db.purchase_events.push(event);

@@ -1,11 +1,28 @@
 import { getAnthropicClient } from "./anthropicClient.js";
 import { EXTRACTION_MODEL } from "./config.js";
 
+export interface ReceiptExtraction {
+  lines: string[];
+  // Order/invoice number, e.g. an online order receipt showing "Order
+  // Confirmation/Invoice Number CD47859895" near the top. In-store receipts
+  // usually won't have one -- null in that case.
+  order_reference: string | null;
+}
+
 const EXTRACTION_PROMPT = `You are looking at a photo of a grocery store receipt.
-List every purchased grocery/household item as a plain product name, one per line,
-stripped of price, quantity, SKU, and store/tax/total lines. Normalize away store
-abbreviations where obvious (e.g. "MLK 2L" -> "Milk 2L"). Respond with ONLY a JSON
-array of strings, nothing else. If you can't read any items, respond with [].`;
+
+Extract two things:
+
+1. Every purchased grocery/household item as a plain product name, one per
+   line, stripped of price, quantity, SKU, and store/tax/total lines.
+   Normalize away store abbreviations where obvious (e.g. "MLK 2L" -> "Milk 2L").
+2. An order/invoice reference number, if present -- e.g. an online order
+   receipt showing "Order Confirmation/Invoice Number CD47859895" near the
+   top. In-store receipts usually won't have one; use null in that case.
+
+Respond with ONLY a JSON object of this exact shape, nothing else:
+{"order_reference": "<id>" or null, "items": ["<item name>", ...]}
+If you can't read any items, use an empty items array.`;
 
 /**
  * One-shot Anthropic Messages API vision call — NOT an Agent SDK session.
@@ -16,7 +33,7 @@ array of strings, nothing else. If you can't read any items, respond with [].`;
 export async function extractReceiptLines(
   imageBase64: string,
   mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp",
-): Promise<string[]> {
+): Promise<ReceiptExtraction> {
   const client = getAnthropicClient("ingest_receipt's vision extraction");
   const response = await client.messages.create({
     model: EXTRACTION_MODEL,
@@ -36,19 +53,30 @@ export async function extractReceiptLines(
   });
 
   const textBlock = response.content.find((b) => b.type === "text");
-  if (!textBlock || textBlock.type !== "text") return [];
+  if (!textBlock || textBlock.type !== "text") {
+    return { lines: [], order_reference: null };
+  }
 
-  return parseJsonStringArray(textBlock.text);
+  return parseExtraction(textBlock.text);
 }
 
-function parseJsonStringArray(text: string): string[] {
-  const match = text.match(/\[[\s\S]*\]/);
-  if (!match) return [];
+function parseExtraction(text: string): ReceiptExtraction {
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return { lines: [], order_reference: null };
+
   try {
     const parsed = JSON.parse(match[0]);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+    const lines = Array.isArray(parsed.items)
+      ? parsed.items.filter(
+          (v: unknown): v is string => typeof v === "string" && v.trim().length > 0,
+        )
+      : [];
+    const order_reference =
+      typeof parsed.order_reference === "string" && parsed.order_reference.trim().length > 0
+        ? parsed.order_reference
+        : null;
+    return { lines, order_reference };
   } catch {
-    return [];
+    return { lines: [], order_reference: null };
   }
 }
