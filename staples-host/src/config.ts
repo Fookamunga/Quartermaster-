@@ -40,10 +40,9 @@ export const CRAFT_API_TOKEN = process.env.CRAFT_API_TOKEN ?? null;
 // loop. Created manually by the user; this server never creates it.
 export const CRAFT_STATUS_DOC_ID = process.env.CRAFT_STATUS_DOC_ID ?? null;
 
-// Used by ingest_receipt for one-shot vision extraction of receipt line
-// items via the Anthropic Messages API — a single stateless API call, not
-// an Agent SDK session, so it doesn't touch the warm-session constraint in
-// CLAUDE.md.
+// Used by ingest_receipt (vision) and ingest_order_text (text) for one-shot
+// extraction calls via the Anthropic Messages API — each a single stateless
+// API call, not an Agent SDK session, so neither touches the warm-session
+// constraint in CLAUDE.md.
 export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? null;
-export const RECEIPT_VISION_MODEL =
-  process.env.RECEIPT_VISION_MODEL ?? "claude-sonnet-5";
+export const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL ?? "claude-sonnet-5";

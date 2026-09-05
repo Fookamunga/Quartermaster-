@@ -22,11 +22,9 @@ generality entirely, since this project only ever needs two fixed channels.
   the posting target for the due/overdue nudges (not yet built),
   auth-failure alert, and "Never tracked" alert.
 - **`#order-import`** — manual backfill of past orders into staples-host's
-  purchase history. Cold sessions here only get staples-host (no
-  woolies-mcp), and only ever see a message's *text* content — photos are
-  intercepted and relayed before any session starts (see below). Pure data
-  entry: no propose/confirm, `record_purchase` executes immediately, agent
-  replies with a matched/unmatched summary.
+  purchase history. Never spawns a cold session at all — see below. Pure
+  data entry: no propose/confirm, matched/unmatched summary relayed straight
+  back from staples-host.
 
 Both channels must already exist in the Discord server — discordbot-host
 resolves them by name at startup and never creates either.
@@ -74,14 +72,15 @@ will silently receive nothing.
 ## Cold-invocation mechanism
 
 `src/containerRunner.ts` spawns `docker run -i --rm -v ... <image>`, writes
-the message (plus any attached image file paths) as JSON to the container's
-stdin, and reads a sentinel-marked JSON result from stdout —
-`container/agent-runner/src/index.ts` is what runs inside, making exactly
-one `query()` call from `@anthropic-ai/claude-agent-sdk` per invocation and
-exiting. Each channel gets its own mounted workspace
-(`workspaces/<channel>/`, containing that channel's `CLAUDE.md`) and its own
-`.claude` session directory, so the two channels' conversations and Claude
-Code session state never cross.
+the message as JSON to the container's stdin, and reads a sentinel-marked
+JSON result from stdout — `container/agent-runner/src/index.ts` is what
+runs inside, making exactly one `query()` call from
+`@anthropic-ai/claude-agent-sdk` per invocation and exiting. In practice this
+only ever runs for `#woolworths-ordering`; `#order-import` is a pure relay
+(see below) and never reaches this code path. Its workspace
+(`workspaces/woolworths-ordering/`, containing that channel's `CLAUDE.md`)
+and its own `.claude` session directory keep that channel's conversations
+and Claude Code session state isolated.
 
 **Why this doesn't hit the non-negotiable constraint's bug:** the container
 process runs `query()` exactly once and exits — the failure mode CLAUDE.md
@@ -107,33 +106,37 @@ already made. ❌ just clears the pending entry and replies "skipped".
 
 ## Order-import: thin relay, not a processor
 
-`#order-import` photos never reach a cold session at all. `src/index.ts`
-downloads the attachment, then `src/orderImportPhotos.ts` reads the bytes,
-base64-encodes them, and calls staples-host's `ingest_receipt` directly via
-`src/mcpClient.ts` — the same plain host-side MCP call pattern the sentries
-and reaction-confirm execution use. No agent, no container, no Claude
-reasoning in that path.
+`#order-import` never spawns a cold session at all — for photos *or* text.
+`handleOrderImportMessage()` in `src/index.ts` calls one of two plain
+host-side MCP relays, both using `src/mcpClient.ts` (the same pattern the
+sentries and reaction-confirm execution use):
 
-This replaced an earlier design where the cold session's own agent was
-instructed (via `workspaces/order-import/CLAUDE.md`) to base64-encode the
-file with Bash and construct the `ingest_receipt` call itself. That broke
-under a real local test: a realistic photo's base64 form runs to roughly
-130,000 characters, which the agent correctly refused to guess at
-reproducing reliably, and two of three attempts hung long enough to need
-force-killing the container. The fix isn't a bigger prompt — it's recognizing
-that step never needed Claude in the loop, since `ingest_receipt` already
-does all its own vision extraction and matching internally.
+- **Photos** — `src/orderImportPhotos.ts` reads the downloaded file's bytes,
+  base64-encodes them, and calls staples-host's `ingest_receipt`.
+- **Text** — `src/orderImportText.ts` passes the raw pasted text straight to
+  staples-host's `ingest_order_text` (a new staples-host tool mirroring
+  `ingest_receipt`'s design for text instead of a photo).
 
-Pasted-text order-confirmations still go through a cold session (the parsing
-rules — extracting a header date, telling category lines from item lines —
-live in `workspaces/order-import/CLAUDE.md` and genuinely need an LLM's
-judgment against messy formatting), then call the properly-isolated
-`record_purchase` per line. This is the one piece of order-import where
-discordbot-host still holds interpretive logic a different front end
-wouldn't automatically get; closing that gap would mean adding a
-text-taking equivalent of `ingest_receipt` to staples-host itself (not done
-here — out of this repo's scope without a decision to touch staples-host's
-tool surface).
+Both replaced an earlier design where the cold session's own agent did the
+work itself, guided by prose instructions in
+`workspaces/order-import/CLAUDE.md` (since deleted — there's no cold session
+left to read it). The photo version broke under a real local test: a
+realistic photo's base64 form runs to roughly 130,000 characters, which the
+agent correctly refused to guess at reproducing reliably, and two of three
+attempts hung long enough to need force-killing the container. The text
+version wasn't broken, exactly, but meant the parsing rules (header-date
+extraction, category-line filtering) only existed as this repo's prose,
+undermining the same "any front end can trigger identical processing"
+principle. Neither ever needed Claude reasoning *in this repo* — the fix in
+both cases was recognizing the actual interpretation belongs in
+staples-host's own tools, which already do (or now do) their own one-shot
+extraction internally.
+
+Verified live end-to-end for both `ingest_order_text` formats against real
+staples-host data (confirmed via the database, not just the tool's
+response): the full order-confirmation format correctly extracted the
+header date and invoice ID; the shorter fallback-date format correctly
+resolved "the 3rd" and skipped the category line.
 
 ## The two sentries
 

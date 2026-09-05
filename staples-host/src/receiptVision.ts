@@ -1,15 +1,5 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { ANTHROPIC_API_KEY, RECEIPT_VISION_MODEL } from "./config.js";
-
-export class VisionNotConfiguredError extends Error {
-  constructor() {
-    super(
-      "ANTHROPIC_API_KEY is not set. Add it to .env (see .env.example) to " +
-        "enable ingest_receipt's vision extraction.",
-    );
-    this.name = "VisionNotConfiguredError";
-  }
-}
+import { getAnthropicClient } from "./anthropicClient.js";
+import { EXTRACTION_MODEL } from "./config.js";
 
 const EXTRACTION_PROMPT = `You are looking at a photo of a grocery store receipt.
 List every purchased grocery/household item as a plain product name, one per line,
@@ -27,11 +17,9 @@ export async function extractReceiptLines(
   imageBase64: string,
   mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp",
 ): Promise<string[]> {
-  if (!ANTHROPIC_API_KEY) throw new VisionNotConfiguredError();
-
-  const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  const client = getAnthropicClient("ingest_receipt's vision extraction");
   const response = await client.messages.create({
-    model: RECEIPT_VISION_MODEL,
+    model: EXTRACTION_MODEL,
     max_tokens: 1024,
     messages: [
       {

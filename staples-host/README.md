@@ -4,9 +4,9 @@ MCP server owning the grocery staples list, purchase-event log, and Craft sync f
 Quartermaster. See the repo root [CLAUDE.md](../CLAUDE.md) for the full architecture
 and [DEPLOYMENT.md](../DEPLOYMENT.md) for the NAS deploy target.
 
-Exposes 8 MCP tools over Streamable HTTP: `list_staples`, `get_item`,
+Exposes 9 MCP tools over Streamable HTTP: `list_staples`, `get_item`,
 `record_purchase`, `set_interval`, `sync_from_craft`, `filter_staples`,
-`ingest_receipt`, `push_status_to_craft`.
+`ingest_receipt`, `ingest_order_text`, `push_status_to_craft`.
 
 ## Running locally
 
@@ -46,8 +46,8 @@ loaded if present). See `.env.example` for the full list with comments:
 | `CRAFT_STAPLES_DOC_ID` | for `sync_from_craft` | Document ID of the Staples list within that share. Find it via `GET ${CRAFT_CONNECT_URL}/documents`. |
 | `CRAFT_API_TOKEN` | for `sync_from_craft`, `push_status_to_craft` | Craft personal API token, sent as `Authorization: Bearer <token>`. The Connect link alone is **not** sufficient — both are needed. This same token covers writes too (confirmed during development — no separate write-scoped token was needed). |
 | `CRAFT_STATUS_DOC_ID` | for `push_status_to_craft` | Document ID of the separate "Staples Status" doc. Must already exist — create it manually in Craft first; this server never creates docs. |
-| `ANTHROPIC_API_KEY` | for `ingest_receipt` | Used for one-shot Claude vision extraction of receipt photos — a single Messages API call, not an Agent SDK session (see the non-negotiable constraint in CLAUDE.md). |
-| `RECEIPT_VISION_MODEL` | no (default `claude-sonnet-5`) | Model used for receipt extraction. |
+| `ANTHROPIC_API_KEY` | for `ingest_receipt`, `ingest_order_text` | Used for one-shot Claude extraction (vision for receipts, text for pasted orders) — a single Messages API call per tool call, not an Agent SDK session (see the non-negotiable constraint in CLAUDE.md). A Claude Code OAuth token (`sk-ant-oat01-...`, e.g. from `claude setup-token`) is **not** a substitute — confirmed by testing, it fails with `401 API key is invalid` against the direct Messages API. Needs a real key from console.anthropic.com (`sk-ant-api03-...`). |
+| `EXTRACTION_MODEL` | no (default `claude-sonnet-5`) | Model used for both extraction tools. |
 
 Tools that need config they don't have return a clear `isError` result explaining
 what's missing, rather than crashing the server.
@@ -151,12 +151,46 @@ items as a plain JSON array of names, then fuzzy-matches each against the staple
 list and records a `receipt_scan` purchase event per match. Unmatched lines come
 back in the response for manual review — nothing is auto-created from a receipt.
 
+## ingest_order_text
+
+`ingest_order_text(text, date?, raw_ref?)` mirrors `ingest_receipt` for pasted
+order-confirmation/order-list text instead of a photo. Built specifically to
+close a "thin relay" architecture gap in discordbot-host's `#order-import`
+channel: that logic used to live as prose in discordbot-host's own workspace
+config (interpreted by a cold Claude session before calling `record_purchase`
+per line), which meant the identical capability wasn't triggerable from any
+other front end without also copying that prose. Now it's one self-contained
+tool, same as `ingest_receipt`.
+
+One Messages API call extracts, in priority order: (1) a date and invoice ID
+from an `Order Confirmation/Invoice Number <ID> <DD Mon, YYYY>` header if
+present, (2) otherwise a date stated informally in the text (e.g. "bought this
+on the 3rd"), resolved relative to today, (3) otherwise `null` (the tool then
+defaults to today). Category/section header lines (no leading ref number) are
+filtered out as not-items. Each remaining line is fuzzy-matched and recorded
+exactly like `ingest_receipt`'s per-line loop — same `receipt_scan` source,
+same matched/unmatched response shape. The extracted invoice ID (or the
+caller's `raw_ref`, or the line text itself) becomes each event's `raw_ref`.
+
+Verified live against real data for both real-world formats: the full
+header'd format correctly extracted the header date and invoice number; a
+shorter, header-less paste with an informal "bought this on the 3rd" correctly
+resolved to the current month. Confirmed independently callable — a plain
+Claude.ai conversation with this server as a custom connector could paste the
+same text and call this tool directly, identical result, no other code
+involved.
+
+`AnthropicNotConfiguredError` (in `src/anthropicClient.ts`) is shared between
+this tool and `ingest_receipt` — both need `ANTHROPIC_API_KEY`, and generalizing
+the error (it used to be named/worded for vision specifically) avoided a
+second near-duplicate class.
+
 ## Fuzzy matching
 
-`get_item`, `record_purchase`, `filter_staples`, and `ingest_receipt` fuzzy-match
-free-text names (receipt OCR noise, plurals, chat phrasing) against tracked items
-via Fuse.js, exact-match first. `sync_from_craft` deliberately does *not* use this
-— see above.
+`get_item`, `record_purchase`, `filter_staples`, `ingest_receipt`, and
+`ingest_order_text` fuzzy-match free-text names (receipt OCR noise, plurals,
+chat phrasing) against tracked items via Fuse.js, exact-match first.
+`sync_from_craft` deliberately does *not* use this — see above.
 
 ## Known open items (not yet resolved — see CLAUDE.md)
 

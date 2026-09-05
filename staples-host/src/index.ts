@@ -4,6 +4,7 @@ import express from "express";
 import { PORT } from "./config.js";
 import { registerFilterStaples } from "./tools/filterStaples.js";
 import { registerGetItem } from "./tools/getItem.js";
+import { registerIngestOrderText } from "./tools/ingestOrderText.js";
 import { registerIngestReceipt } from "./tools/ingestReceipt.js";
 import { registerListStaples } from "./tools/listStaples.js";
 import { registerPushStatusToCraft } from "./tools/pushStatusToCraft.js";
@@ -20,6 +21,7 @@ function buildServer(): McpServer {
   registerSyncFromCraft(server);
   registerFilterStaples(server);
   registerIngestReceipt(server);
+  registerIngestOrderText(server);
   registerPushStatusToCraft(server);
   return server;
 }

@@ -1,8 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { AnthropicNotConfiguredError } from "../anthropicClient.js";
 import { findBestItemMatch } from "../fuzzy.js";
-import { extractReceiptLines, VisionNotConfiguredError } from "../receiptVision.js";
+import { extractReceiptLines } from "../receiptVision.js";
 import { recomputeItemSummary, todayIso } from "../replenishment.js";
 import { newEventId, withDb } from "../storage.js";
 import { isoDate, toolError, toolJson } from "./shared.js";
@@ -39,7 +40,7 @@ export function registerIngestReceipt(server: McpServer): void {
       try {
         lines = await extractReceiptLines(image_base64, media_type);
       } catch (err) {
-        if (err instanceof VisionNotConfiguredError) {
+        if (err instanceof AnthropicNotConfiguredError) {
           return toolError(err.message);
         }
         return toolError(`Receipt vision extraction failed: ${(err as Error).message}`);

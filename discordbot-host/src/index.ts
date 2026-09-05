@@ -7,7 +7,9 @@ import { ensureWorkspaceDirs, runContainerAgent, takeProposedAction } from "./co
 import { connectDiscord, getChannelKeyForId, sendChannelMessage } from "./discord.js";
 import { logger } from "./logger.js";
 import { startNeverTrackedSentry } from "./neverTrackedSentry.js";
-import { formatIngestReceiptResult, ingestReceiptPhoto } from "./orderImportPhotos.js";
+import { ingestReceiptPhoto } from "./orderImportPhotos.js";
+import { formatIngestResult } from "./orderImportRelay.js";
+import { ingestOrderText } from "./orderImportText.js";
 import { handlePendingActionReaction, postAndTrackAction } from "./pendingActions.js";
 import { getSessionId, saveSessionId } from "./sessions.js";
 import type { ChannelKey } from "./types.js";
@@ -53,6 +55,41 @@ async function saveIncomingAttachments(message: Message, channelKey: ChannelKey)
   return saved;
 }
 
+// #order-import is a pure relay, for both photos and text: everything here
+// calls a staples-host tool directly and relays its structured result back
+// to Discord. No cold session, no agent, no Claude reasoning anywhere in
+// this path -- all receipt/order-processing logic (vision extraction, text
+// extraction, fuzzy-matching, recording) lives entirely in staples-host, so
+// the identical capability stays triggerable from any other front end via
+// the same staples-host tools. See CLAUDE.md's order-import section.
+async function handleOrderImportMessage(
+  content: string,
+  savedFiles: SavedAttachment[],
+  receivedAt: number,
+): Promise<void> {
+  for (const file of savedFiles) {
+    try {
+      const result = await ingestReceiptPhoto(file.absPath, file.originalName);
+      await sendChannelMessage("order-import", formatIngestResult(result));
+      logger.info("Photo ingested", { channelKey: "order-import", elapsedMs: Date.now() - receivedAt });
+    } catch (err) {
+      logger.error("ingest_receipt failed", { channelKey: "order-import", err: String(err) });
+      await sendChannelMessage("order-import", `Couldn't process that receipt photo: ${String(err)}`).catch(() => {});
+    }
+  }
+
+  if (!content) return;
+
+  try {
+    const result = await ingestOrderText(content);
+    await sendChannelMessage("order-import", formatIngestResult(result));
+    logger.info("Order text ingested", { channelKey: "order-import", elapsedMs: Date.now() - receivedAt });
+  } catch (err) {
+    logger.error("ingest_order_text failed", { channelKey: "order-import", err: String(err) });
+    await sendChannelMessage("order-import", `Couldn't process that order text: ${String(err)}`).catch(() => {});
+  }
+}
+
 async function handleMessage(message: Message): Promise<void> {
   if (message.author.bot) return;
 
@@ -69,32 +106,17 @@ async function handleMessage(message: Message): Promise<void> {
     logger.error("Failed to send acknowledgment", { err: String(err) }),
   );
 
-  // order-import photos relay straight to staples-host's ingest_receipt --
-  // no cold session, no agent reasoning. All receipt-processing logic
-  // (vision extraction, fuzzy-matching, recording) lives entirely in
-  // staples-host; this is pure plumbing, not something Claude needs to be
-  // in the loop for. Replaces an earlier design where the cold session's
-  // own agent base64-encoded the file and called the tool itself, which
-  // broke at realistic photo sizes. See CLAUDE.md's order-import section.
-  if (channelKey === "order-import" && savedFiles.length > 0) {
-    for (const file of savedFiles) {
-      try {
-        const result = await ingestReceiptPhoto(file.absPath, file.originalName);
-        await sendChannelMessage(channelKey, formatIngestReceiptResult(result));
-        logger.info("Photo ingested", { channelKey, elapsedMs: Date.now() - receivedAt });
-      } catch (err) {
-        logger.error("ingest_receipt failed", { channelKey, err: String(err) });
-        await sendChannelMessage(channelKey, `Couldn't process that receipt photo: ${String(err)}`).catch(() => {});
-      }
-    }
-    if (!content) return; // nothing text-based left to hand to a cold session
+  if (channelKey === "order-import") {
+    await handleOrderImportMessage(content, savedFiles, receivedAt);
+    return;
   }
 
+  // Only woolworths-ordering reaches a cold session at this point.
   const promptParts = [
     `Message from ${message.author.username} at ${new Date().toISOString()} (message_id=${message.id}):`,
     content || "(no text content)",
   ];
-  if (savedFiles.length > 0 && channelKey !== "order-import") {
+  if (savedFiles.length > 0) {
     promptParts.push(`Attached image file(s) saved at: ${savedFiles.map((f) => f.relPath).join(", ")}`);
   }
   const prompt = promptParts.join("\n\n");
@@ -117,16 +139,11 @@ async function handleMessage(message: Message): Promise<void> {
     logger.info("Reply sent", { channelKey, elapsedMs: Date.now() - receivedAt });
   }
 
-  // Only woolworths-ordering uses the propose/confirm flow -- order-import
-  // executes record_purchase/ingest_receipt directly, no proposal file to
-  // check for. See CLAUDE.md.
-  if (channelKey === "woolworths-ordering") {
-    const proposal = takeProposedAction(channelKey);
-    if (proposal) {
-      await postAndTrackAction(message.channelId, proposal.summary, proposal.items).catch((err) =>
-        logger.error("Failed to post proposed action", { err: String(err) }),
-      );
-    }
+  const proposal = takeProposedAction(channelKey);
+  if (proposal) {
+    await postAndTrackAction(message.channelId, proposal.summary, proposal.items).catch((err) =>
+      logger.error("Failed to post proposed action", { err: String(err) }),
+    );
   }
 }
 

@@ -40,8 +40,11 @@ function ensureWritableDir(dir: string): void {
   chmodSync(dir, 0o777);
 }
 
-// Only the woolworths-ordering channel needs woolies-mcp -- order-import is
-// pure staples-host data entry and never touches a cart. See CLAUDE.md.
+// In practice only ever called for woolworths-ordering -- order-import is a
+// pure relay (src/orderImportPhotos.ts, src/orderImportText.ts) and never
+// reaches a cold session at all, so this branch stays for type-completeness
+// against ChannelKey rather than because order-import currently uses it.
+// See CLAUDE.md.
 function mcpServersFor(channelKey: ChannelKey): Record<string, RemoteMcpServerConfig> {
   const staples: Record<string, RemoteMcpServerConfig> = {
     staples: { url: STAPLES_HOST_URL },
