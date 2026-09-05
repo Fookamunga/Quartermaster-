@@ -217,8 +217,20 @@ function startWarmSession(channelKey: ChannelKey): WarmSessionState {
       ...(model ? { model } : {}),
       cwd: workspaceDir,
       allowedTools,
+      // NOT allowDangerouslySkipPermissions here (unlike the cold-session
+      // runner): that option forces the CLI's literal --dangerously-skip-
+      // permissions flag, which the CLI refuses outright when running as
+      // root -- and this process (unlike the cold runner's own container,
+      // which runs as a non-root `node` user) runs as root, since it needs
+      // docker.sock access to spawn sibling containers. permissionMode:
+      // "bypassPermissions" alone gives the same no-interactive-prompts
+      // behavior via a different, sanctioned CLI flag that isn't blocked
+      // under root. Found live: enabling warm mode crashed the CLI
+      // immediately with "cannot be used with root/sudo privileges", which
+      // fed straight into an unthrottled restart loop (89 attempts/2min,
+      // climbing CPU load) since scheduleRestart has no backoff -- see the
+      // TODO below.
       permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
       settingSources: ["project"],
       mcpServers,
       // Replaces the subprocess env entirely (per SDK docs) -- spread
@@ -270,19 +282,37 @@ function sendPrompt(session: WarmSessionState, text: string, timeoutMs: number):
   return result;
 }
 
+// Consecutive-failure count per channel, purely to size restart backoff --
+// survives across restarts since each one replaces the WarmSessionState
+// object. Found live: a session that crashes immediately on every restart
+// (e.g. the root/--dangerously-skip-permissions bug below) fed straight back
+// into scheduleRestart with no delay, hitting 89 restart attempts in 2
+// minutes and climbing CPU load before it was caught -- this exists so any
+// future immediate-crash cause degrades into a slow retry instead of a tight
+// loop, without needing that specific cause diagnosed first.
+const restartFailureCounts = new Map<ChannelKey, number>();
+
+function backoffDelayMs(channelKey: ChannelKey): number {
+  const failures = restartFailureCounts.get(channelKey) ?? 0;
+  return Math.min(1000 * 2 ** failures, 60000); // 1s, 2s, 4s, ... capped at 60s
+}
+
 function scheduleRestart(channelKey: ChannelKey, reason: string): void {
   const session = sessions.get(channelKey);
   if (!session || session.restarting) return;
   session.restarting = true;
   sessions.delete(channelKey);
-  logger.warn("Scheduling warm session restart", { channelKey, reason });
+  const delayMs = backoffDelayMs(channelKey);
+  logger.warn("Scheduling warm session restart", { channelKey, reason, delayMs });
   // Same restart path regardless of trigger (crash here, periodic refresh,
   // or a manual call) -- deliberately the single code path, so exercising
   // any one of them exercises all of them. See CLAUDE.md / README: this is
   // specifically the path that caught nanoclaw's health-check bug, and it
   // still needs a real trigger (not just this synthetic one) once
   // Quartermaster is live to be considered proven.
-  void restartWarmSession(channelKey, reason, session);
+  setTimeout(() => {
+    void restartWarmSession(channelKey, reason, session);
+  }, delayMs);
 }
 
 async function restartWarmSession(
@@ -301,8 +331,11 @@ async function restartWarmSession(
   const fresh = startWarmSession(channelKey);
   const healthy = await healthCheck(fresh);
   if (!healthy) {
-    logger.error("Warm session restart failed health check", { channelKey, reason });
+    const failures = (restartFailureCounts.get(channelKey) ?? 0) + 1;
+    restartFailureCounts.set(channelKey, failures);
+    logger.error("Warm session restart failed health check", { channelKey, reason, consecutiveFailures: failures });
   } else {
+    restartFailureCounts.delete(channelKey);
     logger.info("Warm session restarted and healthy", { channelKey, reason });
   }
   return healthy;
