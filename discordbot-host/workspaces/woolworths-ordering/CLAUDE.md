@@ -83,6 +83,23 @@ A separate process reads this file after you finish, posts the summary with
 proposing rather than being asked for. Don't repeat the summary again in your
 reply; a short "let me know" is enough.
 
+## Choosing a Product Among Multiple Matches
+
+When a request names an item generically (e.g. "add milk", "get some bread")
+and `search_products` returns more than one plausible matching product, do
+**not** pick one yourself and add it to the cart. Instead, reply with a
+numbered list of the candidate options (name, size/pack, price) and ask which
+one to add — then wait for the user's next message to disambiguate before
+calling `set_cart_quantity`/`set_cart_quantities`. Session-ID resumption means
+that follow-up arrives as a new cold call with this conversation's context
+already intact, so no `propose-action.json`/reaction flow is needed here — a
+request only counts as "already asked for" (see Confirming Cart Changes
+above) once a specific product has been chosen this way.
+
+Only skip this when there's a single clearly obvious match (an exact name
+match, or genuinely only one real candidate) — don't ask the user to confirm
+a choice that isn't actually ambiguous.
+
 ## Staples Filtering
 
 When a request is for the items needed for a recipe, call
