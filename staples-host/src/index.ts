@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import express from "express";
 import { PORT } from "./config.js";
 import { registerFilterStaples } from "./tools/filterStaples.js";
 import { registerGetItem } from "./tools/getItem.js";
@@ -32,7 +32,29 @@ const allowedHosts = process.env.ALLOWED_HOSTS
   ? process.env.ALLOWED_HOSTS.split(",").map((h) => h.trim())
   : undefined;
 
-const app = createMcpExpressApp({ host: "0.0.0.0", allowedHosts });
+// Built directly rather than via the SDK's createMcpExpressApp() helper: that
+// helper's own express.json() has no size-limit override and is registered
+// before it hands the app back, so a too-large request (e.g. ingest_receipt's
+// base64-encoded photos, easily 1-2MB+) is rejected by body-parser before our
+// own route ever runs -- there's no way to raise the limit after the fact.
+// Reimplements the same optional Host-header allowlist createMcpExpressApp
+// would have applied, since that's real config surface (ALLOWED_HOSTS).
+const app = express();
+app.use(express.json({ limit: "25mb" }));
+if (allowedHosts) {
+  app.use((req, res, next) => {
+    if (req.hostname && allowedHosts.includes(req.hostname)) {
+      next();
+      return;
+    }
+    res.status(400).json({ error: "Invalid Host header" });
+  });
+} else {
+  console.warn(
+    "Warning: no ALLOWED_HOSTS configured -- any Host header is accepted. " +
+      "Set ALLOWED_HOSTS to restrict this in production.",
+  );
+}
 
 app.get("/healthz", (_req, res) => {
   res.json({ ok: true });

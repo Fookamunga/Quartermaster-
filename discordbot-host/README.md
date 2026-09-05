@@ -23,9 +23,10 @@ generality entirely, since this project only ever needs two fixed channels.
   auth-failure alert, and "Never tracked" alert.
 - **`#order-import`** — manual backfill of past orders into staples-host's
   purchase history. Cold sessions here only get staples-host (no
-  woolies-mcp). Pure data entry: no propose/confirm, `record_purchase`/
-  `ingest_receipt` execute immediately, agent replies with a matched/
-  unmatched summary.
+  woolies-mcp), and only ever see a message's *text* content — photos are
+  intercepted and relayed before any session starts (see below). Pure data
+  entry: no propose/confirm, `record_purchase` executes immediately, agent
+  replies with a matched/unmatched summary.
 
 Both channels must already exist in the Discord server — discordbot-host
 resolves them by name at startup and never creates either.
@@ -103,6 +104,36 @@ posts it with ✅/❌ reactions and records it in `pending-actions.json`
 Executing on ✅ is a plain host-side MCP call (`set_cart_quantities`) via
 `src/mcpClient.ts` — no fresh Claude invocation, since the decision is
 already made. ❌ just clears the pending entry and replies "skipped".
+
+## Order-import: thin relay, not a processor
+
+`#order-import` photos never reach a cold session at all. `src/index.ts`
+downloads the attachment, then `src/orderImportPhotos.ts` reads the bytes,
+base64-encodes them, and calls staples-host's `ingest_receipt` directly via
+`src/mcpClient.ts` — the same plain host-side MCP call pattern the sentries
+and reaction-confirm execution use. No agent, no container, no Claude
+reasoning in that path.
+
+This replaced an earlier design where the cold session's own agent was
+instructed (via `workspaces/order-import/CLAUDE.md`) to base64-encode the
+file with Bash and construct the `ingest_receipt` call itself. That broke
+under a real local test: a realistic photo's base64 form runs to roughly
+130,000 characters, which the agent correctly refused to guess at
+reproducing reliably, and two of three attempts hung long enough to need
+force-killing the container. The fix isn't a bigger prompt — it's recognizing
+that step never needed Claude in the loop, since `ingest_receipt` already
+does all its own vision extraction and matching internally.
+
+Pasted-text order-confirmations still go through a cold session (the parsing
+rules — extracting a header date, telling category lines from item lines —
+live in `workspaces/order-import/CLAUDE.md` and genuinely need an LLM's
+judgment against messy formatting), then call the properly-isolated
+`record_purchase` per line. This is the one piece of order-import where
+discordbot-host still holds interpretive logic a different front end
+wouldn't automatically get; closing that gap would mean adding a
+text-taking equivalent of `ingest_receipt` to staples-host itself (not done
+here — out of this repo's scope without a decision to touch staples-host's
+tool surface).
 
 ## The two sentries
 

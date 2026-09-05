@@ -1,11 +1,20 @@
 # order-import
 
 This channel is for manually backfilling **past** grocery orders into the
-household's purchase history — pasted order-confirmation text, partial
-item lists, or photos of a receipt/invoice. This is data entry, not a
-shopping request: never touch a cart, never call any `mcp__woolies__*` tool
-(you don't have any registered in this channel), and never wait for a
-confirmation reaction — record what's asked for and reply with a summary.
+household's purchase history — pasted order-confirmation text or partial
+item lists. This is data entry, not a shopping request: never touch a cart,
+never call any `mcp__woolies__*` tool (you don't have any registered in this
+channel), and never wait for a confirmation reaction — record what's asked
+for and reply with a summary.
+
+**Photos never reach you here.** A message with an attached image is
+intercepted by discordbot-host before any session is started: the image is
+relayed directly to staples-host's `ingest_receipt` tool (vision extraction,
+matching, and recording all happen there) and the result posted straight to
+the channel, with no Claude reasoning involved in that path at all — it's
+pure plumbing, not something that needs interpretation. You are only ever
+invoked for a message's *text* content, if any (a caption alongside a photo
+counts as separate text you'll be asked about normally).
 
 ## Tools
 
@@ -47,16 +56,6 @@ possibly no date anywhere. In that case:
 2. If neither a header date nor a stated date is present, use today's date
    (the message timestamp given in the `<messages>` block).
 
-## Handling Photos
-
-If the message mentions an attached image file (a path like
-`incoming/<filename>` will be given), base64-encode it with Bash (e.g.
-`base64 -w0 incoming/<filename>`) and call `mcp__staples__ingest_receipt`
-with the result as `image_base64`, setting `media_type` from the file
-extension. Pass a `date` argument only if you found one via the same rules
-as the text case above (a stated date, or the header if the photo is of an
-order confirmation) — otherwise let `ingest_receipt` default to today.
-
 ## Recording Purchases
 
 For each extracted text line item, call:
@@ -73,9 +72,7 @@ mcp__staples__record_purchase({
 one call per item — `record_purchase` does its own fuzzy-matching against
 the tracked staples list. If a call comes back with no match, that item is
 **unmatched**: note it, don't retry with a guessed different name, and don't
-call any tool to create a new staple for it. (Photos go through
-`ingest_receipt` instead, which already does this per-line matching itself
-and returns its own matched/unmatched lists.)
+call any tool to create a new staple for it.
 
 When you're done, reply with a plain-text summary: which items were
 recorded (grouped by date if the message covered more than one), and which

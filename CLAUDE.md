@@ -134,18 +134,50 @@ guild's channels), never creates either.
   acting on any of them routes through woolies-mcp. Cold sessions here get
   both woolies-mcp and staples-host in their MCP config.
 - **`#order-import`** — manual backfill of *past* orders into staples-host's
-  purchase history. Distinct from `ingest_receipt`'s existing photo path
-  (still used here for photos, just not the only input) and from the future
-  automatic order-history API sync (not yet implemented) — this is a third,
-  human-driven way historical purchases get recorded, for orders neither of
-  those paths already covers. Pure data entry, not a cart action: messages/
+  purchase history. Distinct from the future automatic order-history API
+  sync (not yet implemented) — this is a second, human-driven way historical
+  purchases get recorded. Pure data entry, not a cart action: messages/
   photos posted here route straight to staples-host's `record_purchase`
   (text) or `ingest_receipt` (photos) and execute immediately — **no**
   propose/confirm flow, no ✅/❌ reaction. Cold sessions here get only
   staples-host in their MCP config; woolies-mcp isn't needed and isn't
-  passed in. Its own workspace `CLAUDE.md` (separate from
-  `#woolworths-ordering`'s) instructs the agent on this specific job:
-  - **Two pasted-text formats to handle**, plus photos via `ingest_receipt`:
+  passed in.
+
+  **Architecture principle, confirmed by audit:** discordbot-host is a thin
+  relay for this channel, never the processor — all receipt/order-processing
+  logic (vision extraction, fuzzy-matching, recording, `last_purchased`
+  updates) must live in staples-host's own tools, so the identical capability
+  stays triggerable from any other front end (Claude mobile/desktop, a future
+  web UI) via the same staples-host tool, with zero discordbot-host code in
+  the path.
+  - **Photos: relayed directly, no cold session at all.** discordbot-host
+    downloads the attachment, base64-encodes it itself, and calls
+    staples-host's `ingest_receipt` via a plain host-side MCP call (the same
+    pattern the sentries and reaction-confirm execution already use) — no
+    agent, no container spawned for that call. This replaces an earlier
+    design where the cold session's own agent was instructed to
+    base64-encode the file via Bash and construct the tool call itself; that
+    broke in practice (a realistic ~130,000-character base64 string isn't
+    something an agent can reliably read back to build a tool call from, and
+    two of three test attempts hung long enough to need force-killing).
+    Confirmed independently callable: a plain Claude.ai conversation with a
+    staples-tracker-mcp connector could share the same photo and call
+    `ingest_receipt` directly, identical result, no discordbot-host
+    involvement.
+  - **Text: not yet fully separated — flagged, not fixed.** The parsing
+    rules for pasted order-confirmation text (see below) currently live only
+    as prose in discordbot-host's own workspace `CLAUDE.md`, interpreted by
+    its cold session before calling the properly-isolated `record_purchase`.
+    A plain Claude.ai user pasting the same text would likely get a
+    reasonable result from general reasoning, but wouldn't have these
+    codified rules, so "the exact same processing" isn't guaranteed the way
+    it is for photos. Full separation would mean adding a new staples-host
+    tool (e.g. `ingest_order_text`) that does its own text extraction
+    internally, mirroring `ingest_receipt`'s design — not done, since it
+    touches a different, already-shipped service and wasn't asked for yet.
+  - Its own workspace `CLAUDE.md` (separate from `#woolworths-ordering`'s)
+    instructs the agent on the text-parsing job only — it never sees a
+    photo message at all:
     1. A full order confirmation with a
        `Order Confirmation/Invoice Number <ID> <DD Mon, YYYY>` header line —
        extract the date from that header; don't ask the user for it

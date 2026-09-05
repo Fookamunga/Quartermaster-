@@ -7,6 +7,7 @@ import { ensureWorkspaceDirs, runContainerAgent, takeProposedAction } from "./co
 import { connectDiscord, getChannelKeyForId, sendChannelMessage } from "./discord.js";
 import { logger } from "./logger.js";
 import { startNeverTrackedSentry } from "./neverTrackedSentry.js";
+import { formatIngestReceiptResult, ingestReceiptPhoto } from "./orderImportPhotos.js";
 import { handlePendingActionReaction, postAndTrackAction } from "./pendingActions.js";
 import { getSessionId, saveSessionId } from "./sessions.js";
 import type { ChannelKey } from "./types.js";
@@ -22,21 +23,29 @@ function ensureDockerRunning(): void {
   }
 }
 
-async function saveIncomingAttachments(message: Message, channelKey: ChannelKey): Promise<string[]> {
+interface SavedAttachment {
+  relPath: string;
+  absPath: string;
+  originalName: string;
+}
+
+async function saveIncomingAttachments(message: Message, channelKey: ChannelKey): Promise<SavedAttachment[]> {
   const images = [...message.attachments.values()].filter((a) => a.contentType?.startsWith("image/"));
   if (images.length === 0) return [];
 
   const incomingDir = path.join(WORKSPACES_DIR, channelKey, "incoming");
   mkdirSync(incomingDir, { recursive: true });
 
-  const saved: string[] = [];
+  const saved: SavedAttachment[] = [];
   for (const att of images) {
     try {
       const res = await fetch(att.url);
       const buf = Buffer.from(await res.arrayBuffer());
-      const filename = `${Date.now()}-${(att.name || "photo").replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-      writeFileSync(path.join(incomingDir, filename), buf);
-      saved.push(`incoming/${filename}`);
+      const originalName = att.name || "photo";
+      const filename = `${Date.now()}-${originalName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      const absPath = path.join(incomingDir, filename);
+      writeFileSync(absPath, buf);
+      saved.push({ relPath: `incoming/${filename}`, absPath, originalName });
     } catch (err) {
       logger.error("Failed to download attachment", { channelKey, err: String(err) });
     }
@@ -54,21 +63,41 @@ async function handleMessage(message: Message): Promise<void> {
   const savedFiles = await saveIncomingAttachments(message, channelKey);
   if (!content && savedFiles.length === 0) return;
 
-  const timestamp = new Date().toISOString();
-  const promptParts = [
-    `Message from ${message.author.username} at ${timestamp} (message_id=${message.id}):`,
-    content || "(no text content)",
-  ];
-  if (savedFiles.length > 0) {
-    promptParts.push(`Attached image file(s) saved at: ${savedFiles.join(", ")}`);
-  }
-  const prompt = promptParts.join("\n\n");
-
   const receivedAt = Date.now();
   logger.info("Processing message", { channelKey, channelId: message.channelId });
   await sendChannelMessage(channelKey, "I am looking into that").catch((err) =>
     logger.error("Failed to send acknowledgment", { err: String(err) }),
   );
+
+  // order-import photos relay straight to staples-host's ingest_receipt --
+  // no cold session, no agent reasoning. All receipt-processing logic
+  // (vision extraction, fuzzy-matching, recording) lives entirely in
+  // staples-host; this is pure plumbing, not something Claude needs to be
+  // in the loop for. Replaces an earlier design where the cold session's
+  // own agent base64-encoded the file and called the tool itself, which
+  // broke at realistic photo sizes. See CLAUDE.md's order-import section.
+  if (channelKey === "order-import" && savedFiles.length > 0) {
+    for (const file of savedFiles) {
+      try {
+        const result = await ingestReceiptPhoto(file.absPath, file.originalName);
+        await sendChannelMessage(channelKey, formatIngestReceiptResult(result));
+        logger.info("Photo ingested", { channelKey, elapsedMs: Date.now() - receivedAt });
+      } catch (err) {
+        logger.error("ingest_receipt failed", { channelKey, err: String(err) });
+        await sendChannelMessage(channelKey, `Couldn't process that receipt photo: ${String(err)}`).catch(() => {});
+      }
+    }
+    if (!content) return; // nothing text-based left to hand to a cold session
+  }
+
+  const promptParts = [
+    `Message from ${message.author.username} at ${new Date().toISOString()} (message_id=${message.id}):`,
+    content || "(no text content)",
+  ];
+  if (savedFiles.length > 0 && channelKey !== "order-import") {
+    promptParts.push(`Attached image file(s) saved at: ${savedFiles.map((f) => f.relPath).join(", ")}`);
+  }
+  const prompt = promptParts.join("\n\n");
 
   const sessionId = getSessionId(channelKey);
   const output = await runContainerAgent(channelKey, prompt, sessionId);
