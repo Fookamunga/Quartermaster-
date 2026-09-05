@@ -98,6 +98,12 @@ export function registerIngestOrderText(server: McpServer): void {
             source: "receipt_scan",
             raw_ref: reference ?? line,
             order_reference: orderReference,
+            // The extracted line text itself, e.g. "Mainland Cheese Edam
+            // 500g" -- distinct from raw_ref, which is the shared order
+            // reference when one exists (same for every line in the order,
+            // so it can't identify which specific product this event was).
+            product_name: line,
+            sku: null,
             created_at: new Date().toISOString(),
           });
 

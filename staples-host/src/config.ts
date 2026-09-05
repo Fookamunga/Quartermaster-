@@ -55,3 +55,13 @@ export const CRAFT_STATUS_DOC_ID = process.env.CRAFT_STATUS_DOC_ID ?? null;
 // constraint in CLAUDE.md.
 export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? null;
 export const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL ?? "claude-sonnet-5";
+
+// woolies-mcp's own MCP endpoint (the same Funnel URL used elsewhere, e.g.
+// https://<funnel-host>/mcp/<token>). Used only by suggest_alternatives, to
+// re-resolve a historical product_name to a live product via woolies-mcp's
+// own search_products tool -- staples-host's one narrow, read-only exception
+// to never calling woolies-mcp itself. See CLAUDE.md's Ownership boundaries.
+// Null means suggest_alternatives can't resolve anything and returns an
+// empty list rather than guessing -- never a hard failure for the rest of
+// staples-host.
+export const WOOLIES_MCP_URL = process.env.WOOLIES_MCP_URL ?? null;

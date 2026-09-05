@@ -48,9 +48,15 @@ loaded if present). See `.env.example` for the full list with comments:
 | `CRAFT_STATUS_DOC_ID` | for `push_status_to_craft` | Document ID of the separate "Staples Status" doc. Must already exist — create it manually in Craft first; this server never creates docs. |
 | `ANTHROPIC_API_KEY` | for `ingest_receipt`, `ingest_order_text` | Used for one-shot Claude extraction (vision for receipts, text for pasted orders) — a single Messages API call per tool call, not an Agent SDK session (see the non-negotiable constraint in CLAUDE.md). A Claude Code OAuth token (`sk-ant-oat01-...`, e.g. from `claude setup-token`) is **not** a substitute — confirmed by testing, it fails with `401 API key is invalid` against the direct Messages API. Needs a real key from console.anthropic.com (`sk-ant-api03-...`). |
 | `EXTRACTION_MODEL` | no (default `claude-sonnet-5`) | Model used for both extraction tools. |
+| `WOOLIES_MCP_URL` | for `suggest_alternatives` | woolies-mcp's own MCP endpoint, used only to re-resolve a historical `product_name` to a live product — staples-host's one narrow, read-only exception to never calling woolies-mcp itself (see CLAUDE.md's Ownership boundaries). |
 
 Tools that need config they don't have return a clear `isError` result explaining
-what's missing, rather than crashing the server.
+what's missing, rather than crashing the server — except `suggest_alternatives`,
+which deliberately returns an empty `candidates` list instead of an error when
+`WOOLIES_MCP_URL` is unset. Unlike the other tools, "can't resolve anything right
+now" already has a well-defined, harmless caller-side fallback (Tier 2/3 in the
+disambiguation flow), so silently falling through is the correct behavior here,
+not a gap to paper over.
 
 ## Storage
 
@@ -150,6 +156,9 @@ Takes a base64-encoded photo, asks Claude (one Messages API call) to extract lin
 items as a plain JSON array of names, then fuzzy-matches each against the staples
 list and records a `receipt_scan` purchase event per match. Unmatched lines come
 back in the response for manual review — nothing is auto-created from a receipt.
+Each recorded event's `product_name` is the extracted line text itself (e.g.
+"Mainland Cheese Edam 500g"); `sku` stays null, since a receipt photo never
+reliably shows a real Woolworths product SKU.
 
 ## ingest_order_text
 
@@ -170,7 +179,13 @@ defaults to today). Category/section header lines (no leading ref number) are
 filtered out as not-items. Each remaining line is fuzzy-matched and recorded
 exactly like `ingest_receipt`'s per-line loop — same `receipt_scan` source,
 same matched/unmatched response shape. The extracted invoice ID (or the
-caller's `raw_ref`, or the line text itself) becomes each event's `raw_ref`.
+caller's `raw_ref`, or the line text itself) becomes each event's `raw_ref`;
+separately, the raw line text itself (e.g. "Mainland Cheese Edam 500g")
+always becomes that event's `product_name`, regardless of what `raw_ref`
+ended up being — this is what lets `get_item` surface which *specific*
+product was bought on a given purchase, not just which generic staple.
+`sku` stays null for this source; a receipt/pasted order never reliably
+states a real Woolworths product SKU.
 
 Verified live against real data for both real-world formats: the full
 header'd format correctly extracted the header date and invoice number; a
@@ -185,12 +200,41 @@ this tool and `ingest_receipt` — both need `ANTHROPIC_API_KEY`, and generalizi
 the error (it used to be named/worded for vision specifically) avoided a
 second near-duplicate class.
 
+## suggest_alternatives
+
+The ranking engine behind `#woolworths-ordering`'s disambiguation flow (Tier 1
+of the three-tier fallback documented in that channel's workspace CLAUDE.md).
+`suggest_alternatives(item_name)` fuzzy-matches `item_name`, takes up to the
+10 most recent `purchase_events` that have a `product_name`, and re-resolves
+each to a live Woolworths product via `wooliesClient.ts`'s `searchTopProduct`
+— a fresh MCP client connection to woolies-mcp per call (`src/wooliesClient.ts`),
+not a held-open one, mirroring this server's own stateless-per-request design
+for its `/mcp` route. This is staples-host's one narrow, read-only exception
+to the Ownership boundaries in CLAUDE.md: search only, no cart access, no
+auth token of its own — configured via `WOOLIES_MCP_URL`.
+
+Resolution happens sequentially (`src/alternatives.ts`), not in parallel —
+this is a single low-traffic household service, no reason to open up to 10
+concurrent connections to a shared external dependency for one request. The
+resolved results are deduped by `sku`/`variantKey`, not by the raw
+`product_name` text: the same real product can come back worded slightly
+differently across receipts/orders (OCR and text extraction aren't
+consistent), and deduping on raw text first would fragment one frequently-
+bought product's count. Ranked by frequency within that 10-event window,
+recency as the tiebreaker only. Returns up to 5 as `{name, sku, price}`,
+fully resolved and ready to present — or an empty list (never a guess) if
+`item_name` isn't a tracked staple, has no purchase history with a
+`product_name`, or nothing historical resolves to a live product anymore
+(discontinued/delisted products are dropped individually, not treated as a
+failure of the whole call).
+
 ## Fuzzy matching
 
-`get_item`, `record_purchase`, `filter_staples`, `ingest_receipt`, and
-`ingest_order_text` fuzzy-match free-text names (receipt OCR noise, plurals,
-chat phrasing) against tracked items via Fuse.js, exact-match first.
-`sync_from_craft` deliberately does *not* use this — see above.
+`get_item`, `record_purchase`, `filter_staples`, `ingest_receipt`,
+`ingest_order_text`, and `suggest_alternatives` fuzzy-match free-text names
+(receipt OCR noise, plurals, chat phrasing) against tracked items via
+Fuse.js, exact-match first. `sync_from_craft` deliberately does *not* use
+this — see above.
 
 ## Known open items (not yet resolved — see CLAUDE.md)
 

@@ -32,6 +32,18 @@ export interface PurchaseEvent {
   // handwritten notes), which fall back to the ±2-day date+item proximity
   // check in the reconciliation pass instead. See CLAUDE.md.
   order_reference: string | null;
+  // The specific product text as extracted from the source (e.g. "Mainland
+  // Cheese Edam 500g"), distinct from item_id, which points at the generic
+  // staple (e.g. "Cheese"). Null for events recorded before this field
+  // existed, and for a manual record_purchase call that doesn't supply one.
+  // See CLAUDE.md's Choosing a Product Among Multiple Matches / purchase
+  // history section for how this gets used.
+  product_name: string | null;
+  // A real Woolworths product SKU, when the source structurally provides
+  // one -- expected only from the future order_history_api source. Never
+  // reliably present on a scanned receipt or pasted order text, so
+  // receipt_scan events always leave this null rather than guessing.
+  sku: string | null;
   created_at: string; // ISO datetime
 }
 

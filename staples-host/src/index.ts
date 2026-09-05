@@ -11,6 +11,7 @@ import { registerListStaples } from "./tools/listStaples.js";
 import { registerPushStatusToCraft } from "./tools/pushStatusToCraft.js";
 import { registerRecordPurchase } from "./tools/recordPurchase.js";
 import { registerSetInterval } from "./tools/setInterval.js";
+import { registerSuggestAlternatives } from "./tools/suggestAlternatives.js";
 import { registerSyncFromCraft } from "./tools/syncFromCraft.js";
 
 function buildServer(): McpServer {
@@ -24,6 +25,7 @@ function buildServer(): McpServer {
   registerIngestReceipt(server);
   registerIngestOrderText(server);
   registerPushStatusToCraft(server);
+  registerSuggestAlternatives(server);
   return server;
 }
 

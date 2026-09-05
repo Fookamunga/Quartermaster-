@@ -79,9 +79,19 @@ queries. Only staples-host touches this volume.
 
 **Ownership boundaries:**
 - staples-host owns the full Craft sync end-to-end. Nothing else talks to Craft.
-- staples-host calls woolies-mcp directly for order-history sync (once Adrian's API
-  fix lands) — no lifted/duplicated Woolworths API logic.
-- The Woolworths auth token never leaves woolies-mcp.
+- staples-host calls woolies-mcp directly for two narrow, read-only reasons —
+  order-history sync (once Adrian's API fix lands) and `suggest_alternatives`'
+  product-name resolution (see MCP tools below) — never for anything that
+  writes to the cart or places an order. Confirmed by diagram: discordbot-host
+  and Claude mobile both talk to staples-host only for the disambiguation
+  flow, never to woolies-mcp directly — staples-host is the sole caller of
+  `search_products` here, returning fully-resolved results (name, sku, price)
+  back to whichever front end asked. Every other boundary stays exactly as it
+  was: staples-host still owns Craft exclusively, and all cart/order-writing
+  actions remain woolies-mcp's job alone.
+- The Woolworths auth token never leaves woolies-mcp — staples-host's calls
+  into it are plain MCP tool calls like any other caller's, no separate
+  credential of its own.
 
 **Data model:**
 - `items`: item_id, name, sku (cached, self-heals via woolies-mcp `search_products`
@@ -90,7 +100,19 @@ queries. Only staples-host touches this volume.
 - `purchase_events` (append-only): event_id, item_id, date, source (`receipt_scan` |
   `order_history_api`), raw_ref, order_reference (order/invoice number, e.g.
   Woolworths NZ's "Order Confirmation/Invoice Number CD47859895"; null for
-  sources with no invoice number — in-store receipts, handwritten notes)
+  sources with no invoice number — in-store receipts, handwritten notes),
+  product_name (the specific product text as extracted from the source, e.g.
+  "Mainland Cheese Edam 500g" — distinct from `item_id`, which points at the
+  generic staple, e.g. "Cheese"; null for events recorded before this field
+  existed, and for any future manual `record_purchase` call that doesn't
+  supply one), sku (a real Woolworths product SKU, when the source structurally
+  provides one — expected only from the future `order_history_api` source,
+  never reliably present on a scanned receipt or pasted order text, so
+  `receipt_scan` events always leave this null rather than guessing)
+- A historical `product_name` is re-resolved to a live product by
+  staples-host's own `suggest_alternatives` tool (see MCP tools below), never
+  baked into a stored `sku` that could go stale as products get discontinued
+  or renamed.
 - `items.last_purchased` / `last_purchased_source`: denormalized, derived from
   `purchase_events`
 
@@ -99,6 +121,25 @@ queries. Only staples-host touches this volume.
 - `get_item(name)`
 - `record_purchase(item_name, date, source, raw_ref?)` — fuzzy-match, append event,
   update summary
+- `suggest_alternatives(item_name)` — the ranking engine behind
+  `#woolworths-ordering`'s disambiguation flow (Tier 1 of the three-tier flow
+  in that channel's workspace CLAUDE.md; see "Choosing a Product Among
+  Multiple Matches" there for the full picture). Fuzzy-matches `item_name`
+  against the staples list, reads that item's `purchase_events`, and for up
+  to the 10 most recent events with a `product_name`, re-resolves each to a
+  live product via woolies-mcp's own `search_products` — this is
+  staples-host's one narrow exception to the Ownership boundaries above:
+  read-only, search only, no cart access, no auth token of its own. Dedupes
+  the resolved results by `sku`/`variantKey` (not by the raw extracted text,
+  which varies across receipts/orders for the same real product), ranks by
+  frequency within that window with recency as the tiebreaker, and returns
+  up to the top 5 as `{name, sku, price}` — fully resolved, ready for a
+  caller to present directly. Returns an empty list rather than a guess if
+  `item_name` isn't a tracked staple, has no purchase history with a
+  `product_name`, or none of the historical names resolve to a live product
+  anymore. Identically callable from Claude mobile/desktop directly, not
+  just discordbot-host's cold session — same boundary as every other
+  staples-host tool.
 - `filter_staples(ingredients: string[])` — which ingredients aren't already-stocked
 - `ingest_receipt(image)` — vision extraction (line items + order/invoice
   reference number, when present) → order_reference dedup check → fuzzy-match →

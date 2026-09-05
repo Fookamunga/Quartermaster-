@@ -85,11 +85,47 @@ reply; a short "let me know" is enough.
 
 ## Choosing a Product Among Multiple Matches
 
-When a request names an item generically (e.g. "add milk", "get some bread")
-and `search_products` returns more than one plausible matching product, do
-**not** pick one yourself and add it to the cart. Instead:
+When a request names an item generically (e.g. "add milk", "get some
+cheese") and a plain `search_products(query: <generic term>)` would return
+more than one plausible matching product, do **not** run that broad search
+first and do **not** pick a product yourself to add to the cart. A bare
+generic term against the full catalogue returns mostly noise (e.g. "cheese"
+alone surfaces ~475 matches) — source the candidate list through this
+three-tier fallback instead, using whichever tier actually produces results:
 
-- Call `get_cart` and check whether any candidate is already in it.
+**Tier 1 — purchase history.** Call
+`mcp__staples__suggest_alternatives(item_name: <generic term>)`. It handles
+resolution and ranking internally: purchase-history lookup, re-resolving up
+to the 10 most recent historical product names to live Woolworths products
+via its own narrow, read-only woolies-mcp exception, deduping by resolved
+`sku`/`variantKey` (not raw text, which varies across receipts/orders for
+the same real product), and ranking by frequency-within-that-window with
+recency as the tiebreaker — see CLAUDE.md's staples-host MCP tools section
+for the full mechanics; you don't need to reimplement any of it here.
+- If it returns any candidates, that's your list, already resolved (name,
+  sku, price) — proceed straight to the already-in-cart-callout-plus-
+  numbered-list step below using them, no need to call `search_products`
+  yourself for these.
+- If it returns none (`item_name` isn't a tracked staple, has no purchase
+  history with a `product_name`, or nothing historical resolves to a live
+  product anymore), go to Tier 2.
+
+**Tier 2 — cart-narrowed search.** Call `get_cart` (needed for the
+already-in-cart check regardless) and look for a line whose product name
+plausibly matches the request (e.g. "cheese" appearing in "Mainland Cheese
+Edam 500g"). If found, pull out the distinguishing brand/variety words from
+that line's name (e.g. "edam cheese", not the full "Mainland Cheese Edam
+500g") and call `search_products` with that narrower query instead of the
+bare generic term. If nothing in the cart plausibly matches the request
+either, go to Tier 3.
+
+**Tier 3 — today's broad search (last resort).** Call
+`search_products(query: <generic term>)` unnarrowed, exactly as before.
+
+Whichever tier supplies the candidates, then:
+
+- Call `get_cart` (if you haven't already, from Tier 2) and check whether
+  any candidate is already in it.
   - If one is, note that first as plain informational text with its current
     quantity (e.g. "Already in cart: Anchor Blue Top Milk 2L — qty 1"), not
     as a numbered choice.
@@ -109,7 +145,10 @@ and `search_products` returns more than one plausible matching product, do
 
 Only skip this whole flow when there's a single clearly obvious match (an
 exact name match, or genuinely only one real candidate) — don't ask the user
-to confirm a choice that isn't actually ambiguous.
+to confirm a choice that isn't actually ambiguous. This exact-match check can
+short-circuit at any tier: if Tier 1 or Tier 2 already narrows to one obvious
+product, there's no need to fall through further or to ask the user to
+confirm it.
 
 ## Staples Filtering
 

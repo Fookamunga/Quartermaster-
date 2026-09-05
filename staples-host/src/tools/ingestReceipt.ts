@@ -94,6 +94,11 @@ export function registerIngestReceipt(server: McpServer): void {
             source: "receipt_scan",
             raw_ref: reference,
             order_reference,
+            // The extracted line text itself, e.g. "Mainland Cheese Edam
+            // 500g" -- distinct from raw_ref, which is the shared receipt
+            // reference (same for every line on this receipt).
+            product_name: line,
+            sku: null,
             created_at: new Date().toISOString(),
           });
 

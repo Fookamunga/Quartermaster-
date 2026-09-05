@@ -1,0 +1,46 @@
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import { rankAlternatives } from "../alternatives.js";
+import { findBestItemMatch } from "../fuzzy.js";
+import { readDb } from "../storage.js";
+import { toolJson } from "./shared.js";
+
+export function registerSuggestAlternatives(server: McpServer): void {
+  server.registerTool(
+    "suggest_alternatives",
+    {
+      title: "Suggest alternatives",
+      description:
+        "Given a generic item name (e.g. 'cheese'), resolve and rank real product " +
+        "alternatives from purchase history. Fuzzy-matches item_name against the " +
+        "staples list, takes up to the 10 most recent purchase_events with a " +
+        "product_name, re-resolves each to a live Woolworths product via " +
+        "woolies-mcp's own search_products, dedupes by resolved sku/variantKey " +
+        "(not raw text, which varies across receipts/orders for the same real " +
+        "product), and ranks by frequency within that window with recency as the " +
+        "tiebreaker. Returns up to 5 fully-resolved candidates as " +
+        "{name, sku, price} -- ready to present directly, no further lookup " +
+        "needed. Returns an empty candidates list (never a guess) if item_name " +
+        "isn't a tracked staple, has no purchase history with a product_name, or " +
+        "nothing historical resolves to a live product anymore. Read-only: never " +
+        "touches the cart, never places an order.",
+      inputSchema: {
+        item_name: z.string().min(1).describe("Generic item name, e.g. 'cheese'"),
+      },
+    },
+    async ({ item_name }) => {
+      const db = await readDb();
+      const item = findBestItemMatch(db.items, item_name);
+      if (!item) {
+        return toolJson({ candidates: [] });
+      }
+
+      const events = db.purchase_events
+        .filter((e) => e.item_id === item.item_id && e.product_name)
+        .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+
+      const candidates = await rankAlternatives(events);
+      return toolJson({ candidates });
+    },
+  );
+}
