@@ -93,6 +93,25 @@ reconciliation ever needs real queries (per CLAUDE.md) — not needed yet.
   - `last_purchased` omitted but a real anchor already exists (from prior
     purchase events) → that existing date is used.
 
+**`item.status` is a write-time cache, never trusted as authoritative on
+read.** It's only ever updated by `recomputeItemSummary()`, called after
+`record_purchase`/`ingest_receipt`/`ingest_order_text` — correct for every
+organic code path (`purchase_events` is append-only, no delete tool exists,
+so it can't drift under normal use). But `list_staples`, `get_item`, and
+`push_status_to_craft` all derive status fresh via `computeStatus` at read
+time rather than returning the stored field directly, so a caller is never
+exposed to a stale value regardless of how one might arise — a manual
+`db.json` edit, a future migration, a bug in some future write path. Found
+live: this project's own test-data cleanup (editing `db.json` directly to
+remove synthetic purchase events, forgetting to also reset `status`) left
+an item with `status: "overdue"` and `replenishment_interval_days: null` —
+a direct violation of "items with no interval never surface as due" above.
+The core due/overdue math was never wrong (`computeStatusFromAnchor` checks
+`intervalDays == null` first, unconditionally), but nothing re-verified the
+stored field against it on read, so the stale value passed straight
+through. Re-deriving on every read closes that whole class of risk instead
+of just the one instance.
+
 ## Craft sync
 
 `sync_from_craft` reads the Staples doc's direct child blocks and treats every
