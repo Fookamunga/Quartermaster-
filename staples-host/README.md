@@ -231,10 +231,34 @@ failure of the whole call).
 ## Fuzzy matching
 
 `get_item`, `record_purchase`, `filter_staples`, `ingest_receipt`,
-`ingest_order_text`, and `suggest_alternatives` fuzzy-match free-text names
+`ingest_order_text`, and `suggest_alternatives` match free-text names
 (receipt OCR noise, plurals, chat phrasing) against tracked items via
-Fuse.js, exact-match first. `sync_from_craft` deliberately does *not* use
-this — see above.
+`findBestItemMatch` (`src/fuzzy.ts`), three passes in order: exact match,
+then whole-word substring match, then Fuse.js fuzzy search as a fallback.
+`sync_from_craft` deliberately does *not* use this — see above.
+
+**The whole-word substring pass exists because Fuse alone silently failed
+on real-world data.** Found while verifying `suggest_alternatives`: Fuse's
+length-normalized edit-distance score means a short, generic staple name
+(most of the actual synced list — "Bread", "Milk", "Salt", "Pepper", "Rice")
+scores as *no match at all* against a long, verbose real product line (e.g.
+"Woolworths Bread Wholemeal 700g") — confirmed directly, and not fixable via
+`ignoreLocation`/`distance` tuning, since the penalty comes from the length
+mismatch itself, not match position. This affected the majority of the real
+Craft-synced staples list (10 of 12 tracked items at the time this was
+found), meaning most real receipt/order imports would have silently landed
+as `unmatched` — this was caught before any real purchase history existed
+to be lost, not after.
+
+The fix checks whether the item's name appears as a `\b`-anchored whole word
+(or word sequence) inside the query before falling back to Fuse — this is
+the missing direction; Fuse's own strength (a short query like "oat milk"
+against a longer canonical name) was never broken and still works via the
+same fallback. Word-boundary anchoring specifically avoids matching inside
+partial words or compounds ("Rice" must not match inside "apprice" or
+"Gingerbread"). When more than one staple's name appears in the query (e.g.
+both "Milk" and "Oat Milk" are tracked and the line says "Oat Milk"), the
+longest — most specific — match wins.
 
 ## Known open items (not yet resolved — see CLAUDE.md)
 
