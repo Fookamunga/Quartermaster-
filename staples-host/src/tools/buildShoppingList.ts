@@ -51,6 +51,13 @@ export function registerBuildShoppingList(server: McpServer): void {
         "trimmed 3 from the first response) with fresh numbering scoped to " +
         "just that one ingredient, and ask explicitly whether it's needed at " +
         "all.\n\n" +
+        "If a very long ingredient list can't all be resolved within this " +
+        "call's own time budget, the response includes `partial: true` and " +
+        "`not_attempted` (the ingredient names skipped, in the order given). " +
+        "Say so plainly rather than pretending the list is complete -- render " +
+        "the resolved `items` as normal, then note which ones weren't " +
+        "checked yet and that they can be asked about in a follow-up call " +
+        "with just those names.\n\n" +
         "Read-only: never touches the cart, never places an order.",
       inputSchema: {
         ingredients: z.array(z.string().min(1)).min(1).describe("Plain ingredient names, e.g. from a recipe"),

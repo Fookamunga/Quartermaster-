@@ -25,6 +25,20 @@ const FULL_ALTERNATIVES_CAP = 5;
 // means in the tool's own description.
 const TRIMMED_ALTERNATIVES_CAP = 3;
 
+// Soft internal deadline for the whole needed-ingredient resolution loop --
+// checked before starting each ingredient, not mid-resolution (simpler than
+// cancelling an in-flight call, and avoids ever returning half-resolved data
+// for one ingredient). Set well under discordbot-host's own 300s hard
+// container-kill timeout (containerRunner.ts's CONTAINER_TIMEOUT_MS) so
+// there's real buffer left for the agent's own reasoning/rendering time on
+// either side of this one tool call -- confirmed live this matters: a real
+// 14-ingredient recipe (10 needed) took 221s before the fastMode fix below,
+// uncomfortably close to that ceiling with zero margin for anything else.
+// Exceeding it returns whatever's resolved so far plus which ingredients
+// weren't attempted, rather than risking total silence from a killed
+// container -- see CLAUDE.md.
+const TIME_BUDGET_MS = 180_000;
+
 export interface ShoppingListAlternative {
   number: number;
   name: string;
@@ -52,6 +66,10 @@ export interface ShoppingListEntry {
 
 export interface ShoppingListResult {
   items: ShoppingListEntry[];
+  // Present (true) only if the time budget was hit before every needed
+  // ingredient could be resolved -- see not_attempted for which ones.
+  partial?: boolean;
+  not_attempted?: string[];
 }
 
 function toFullAlternative(a: RankedAlternative | WooliesProductFull, recommended: boolean): ShoppingListFullAlternative {
@@ -79,7 +97,7 @@ async function resolveFromHistory(
   const all = candidates
     .slice(0, FULL_ALTERNATIVES_CAP)
     .map((c, i) => toFullAlternative(c, i === 0));
-  const bestValue = topPickFull ? await findBestValue(topPickFull) : null;
+  const bestValue = topPickFull ? await findBestValue(topPickFull, { fastMode: true }) : null;
   return { all, bestValue };
 }
 
@@ -109,7 +127,7 @@ async function resolveFromCart(
   const narrowedQuery = deriveVarietyQuery(full.name, full.brand) || ingredient;
   const results = await searchFirstPage(narrowedQuery);
   const all = results.slice(0, FULL_ALTERNATIVES_CAP).map((r) => toFullAlternative(r, false));
-  const bestValue = await findBestValue(full);
+  const bestValue = await findBestValue(full, { fastMode: true });
   return { all, bestValue };
 }
 
@@ -125,7 +143,7 @@ async function resolveFromSearch(
   if (results.length === 0) return null;
 
   const all = results.slice(0, FULL_ALTERNATIVES_CAP).map((r) => toFullAlternative(r, false));
-  const bestValue = await findBestValue(results[0]);
+  const bestValue = await findBestValue(results[0], { fastMode: true });
   return { all, bestValue };
 }
 
@@ -134,9 +152,17 @@ async function resolveFromSearch(
  * list (e.g. from a recipe) in one call -- see build_shopping_list's tool
  * description for the full contract this produces. Runs the same
  * three-tier fallback the single-item "Choosing a Product Among Multiple
- * Matches" flow already uses, per ingredient, sequentially (this is a single
- * low-traffic household service calling a shared external dependency --
- * same reasoning as rankAlternatives' own sequential resolution).
+ * Matches" flow already uses, per ingredient, sequentially -- deliberately
+ * kept sequential, not parallelized, even after a real 14-ingredient recipe
+ * (10 needed) was confirmed live to take 221s: woolies-mcp's own author
+ * documents "intentional rate-limiting safeguards" for single-shopper-scale
+ * use, the same real constraint rankAlternatives' own sequential resolution
+ * was already built around, not a stylistic preference specific to that one
+ * loop. The fix for the 221s case is findBestValue's fastMode (see
+ * resolveFromHistory/Cart/Search below) -- confirmed live that findBestValue
+ * alone was the dominant per-ingredient cost (up to ~27s of one ingredient's
+ * ~32s), not the sequential ordering itself. TIME_BUDGET_MS is a second,
+ * independent safety net on top of that fix, not a replacement for it.
  */
 export async function buildShoppingList(db: Database, ingredients: string[]): Promise<ShoppingListResult> {
   const { needed, alreadyStocked } = classifyIngredients(db.items, ingredients);
@@ -152,7 +178,15 @@ export async function buildShoppingList(db: Database, ingredients: string[]): Pr
   }));
 
   let nextNumber = 1;
+  const startedAt = Date.now();
+  const notAttempted: string[] = [];
+
   for (const n of needed) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) {
+      notAttempted.push(n.ingredient);
+      continue;
+    }
+
     let tier: ShoppingListEntry["tier"] = "none";
     let all: ShoppingListFullAlternative[] = [];
     let bestValue: BestValueResult | null = null;
@@ -195,5 +229,8 @@ export async function buildShoppingList(db: Database, ingredients: string[]): Pr
     });
   }
 
+  if (notAttempted.length > 0) {
+    return { items, partial: true, not_attempted: notAttempted };
+  }
   return { items };
 }

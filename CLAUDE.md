@@ -328,6 +328,42 @@ queries. Only staples-host touches this volume.
   mobile/desktop identically to Discord, unlike this file. Read-only, same
   as `suggest_alternatives`. See the `#woolworths-ordering` workspace
   CLAUDE.md for when to call this instead of the single-item flow.
+
+  **Scale fix, confirmed live against a real 14-ingredient recipe (Chilli
+  and Lime Squid Salad, 10 needed):** the initial build timed out in
+  production with no reply at all. Root-caused to `findBestValue`'s variety
+  search + full pagination — confirmed live it alone cost up to ~27s of one
+  ingredient's ~32s (83%), run once per needed ingredient, pushing the real
+  total to 221s, uncomfortably close to discordbot-host's 300s hard
+  container-kill timeout with zero margin for the agent's own reasoning time
+  on either side. Two changes, evaluated together with concurrency as a
+  third option and confirmed via the same real recipe before/after each:
+  - **`findBestValue(topPick, { fastMode: true })`** (`bestValue.ts`) reuses
+    `searchVariety`'s own broadening-loop first page directly
+    (`searchVarietyFirstPageOnly` in `wooliesClient.ts`) instead of
+    re-fetching with full pagination — confirmed live this cut the same
+    Squid case from 26.9s to 6.2s (4.4x), and the full 14-ingredient
+    recipe from 221s to 96s, with identical tier results and every
+    ingredient still getting a best-value figure. A deliberately weaker,
+    first-page-only comparison rather than full-catalogue coverage — an
+    acceptable trade once per shopping-list ingredient, not worth it for a
+    single confident answer, so `suggest_alternatives`/`get_best_value`
+    never set it and keep `searchVariety`'s full guarantee unchanged.
+  - **Concurrency was considered and deliberately not used.** Resolving
+    ingredients in parallel would cut wall-clock time further, but
+    woolies-mcp's own author documents "intentional rate-limiting
+    safeguards" for single-shopper-scale use — a real external constraint,
+    not a stylistic choice specific to `rankAlternatives`' own sequential
+    design (which this reasoning was confirmed to generalize from, not be
+    narrow to). The `fastMode` fix alone already restored a comfortable
+    margin without taking on that risk.
+  - **`TIME_BUDGET_MS` (180s, in `shoppingList.ts`)** is a second,
+    independent safety net on top of the fix above, not a replacement for
+    it: if a still-larger ingredient list runs past this soft internal
+    deadline, the response includes `partial: true` and `not_attempted`
+    (remaining ingredient names) instead of risking the container-kill
+    silence the original bug produced. Checked before starting each
+    ingredient, never mid-resolution.
 - `check_restock_needed()` — on-demand version of the weekly restock report
   below: which staples are due, overdue, or projected to run out within 7
   days, right now. Calls the exact same `itemsRunningOutSoon()` calculation

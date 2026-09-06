@@ -1,5 +1,5 @@
 import { deriveVarietyQuery } from "./varietyQuery.js";
-import { searchVariety, type WooliesProductFull } from "./wooliesClient.js";
+import { searchVariety, searchVarietyFirstPageOnly, type WooliesProductFull } from "./wooliesClient.js";
 
 export interface BestValueResult {
   name: string;
@@ -37,12 +37,23 @@ function parseUnitPrice(unitPrice: string | null): { value: number; unit: string
  * or null if nothing usable is found -- never a guess. See CLAUDE.md's
  * suggest_alternatives entry: this is a best-effort suggestion, not an
  * authoritative cheapest-available claim.
+ *
+ * `fastMode` swaps the underlying search for searchVarietyFirstPageOnly --
+ * confirmed live this cuts the dominant per-ingredient cost in
+ * build_shopping_list (up to ~27s down to whatever the broadening probe
+ * alone costs) at the price of a weaker, first-page-only comparison rather
+ * than full-catalogue coverage. Worth it once per shopping-list ingredient;
+ * not worth it for a single confident answer, so the single-item
+ * disambiguation flow (suggest_alternatives/get_best_value) never sets it.
  */
-export async function findBestValue(topPick: {
-  name: string;
-  brand: string | null;
-  unitPrice: string | null;
-}): Promise<BestValueResult | null> {
+export async function findBestValue(
+  topPick: {
+    name: string;
+    brand: string | null;
+    unitPrice: string | null;
+  },
+  options?: { fastMode?: boolean },
+): Promise<BestValueResult | null> {
   const topParsed = parseUnitPrice(topPick.unitPrice);
   if (!topParsed) return null; // nothing to compare a variety search against
 
@@ -51,7 +62,9 @@ export async function findBestValue(topPick: {
 
   let candidates: WooliesProductFull[];
   try {
-    candidates = await searchVariety(varietyQuery);
+    candidates = options?.fastMode
+      ? await searchVarietyFirstPageOnly(varietyQuery)
+      : await searchVariety(varietyQuery);
   } catch {
     return null; // connection/protocol failure -- degrade to no best-value entry
   }

@@ -314,21 +314,61 @@ const MIN_VARIETY_RESULTS = 5;
  * to 10 times per suggest_alternatives invocation (once per historical
  * event), so its retry depth is capped to bound worst-case latency: this
  * runs at most once or twice per invocation, so the latency budget is
- * comfortably wider. Once a broad-enough query is found (cheaply, via a
- * single-page check), re-fetches it with full pagination so
- * findBestValue's cheapest-across-everything claim keeps its existing
- * coverage guarantee.
+ * comfortably wider.
+ *
+ * Returns the broadened query alongside the LAST probe's own first-page
+ * results -- shared by searchVariety (which re-fetches with full pagination
+ * for a genuine coverage guarantee) and searchVarietyFirstPageOnly (which
+ * reuses this first page directly, no re-fetch) below, so the two never
+ * duplicate the actual broadening logic.
  */
-export async function searchVariety(query: string): Promise<WooliesProductFull[]> {
+async function broadenVarietyQuery(
+  query: string,
+): Promise<{ broadenedQuery: string; firstPage: WooliesProductFull[] }> {
   const words = query.trim().split(/\s+/).filter(Boolean);
   let broadenedQuery = query;
+  let firstPage: WooliesProductFull[] = [];
 
   for (let wordCount = words.length; wordCount >= Math.min(MIN_QUERY_WORDS, words.length); wordCount--) {
     const attemptQuery = words.slice(0, wordCount).join(" ");
     const { products } = await callSearchProducts(attemptQuery, 1);
     broadenedQuery = attemptQuery;
+    firstPage = products.map(toFull).filter((p): p is WooliesProductFull => p != null);
     if (products.length >= MIN_VARIETY_RESULTS) break;
   }
 
+  return { broadenedQuery, firstPage };
+}
+
+/**
+ * Once a broad-enough query is found (cheaply, via a single-page check),
+ * re-fetches it with full pagination so findBestValue's cheapest-across-
+ * everything claim keeps its existing coverage guarantee. Use this for a
+ * single, confident best-value answer (the single-item disambiguation
+ * flow) -- see searchVarietyFirstPageOnly for the cheaper alternative used
+ * when this cost would otherwise be paid once per ingredient in a
+ * multi-item shopping list.
+ */
+export async function searchVariety(query: string): Promise<WooliesProductFull[]> {
+  const { broadenedQuery } = await broadenVarietyQuery(query);
   return searchAllPages(broadenedQuery);
+}
+
+/**
+ * Cheaper alternative to searchVariety: returns the broadening loop's own
+ * last first-page fetch directly, with NO further re-fetch/pagination --
+ * confirmed live this is the dominant cost searchVariety pays (up to ~27s
+ * for one ingredient, most of a real build_shopping_list call's per-
+ * ingredient time), acceptable to pay once for a single confident answer
+ * but not once per ingredient across a whole shopping list. Trades away
+ * full-catalogue coverage for a "cheapest among what the broadening probe
+ * already saw" figure -- a weaker, but still genuine, best-effort estimate,
+ * consistent with best-value already being documented as best-effort rather
+ * than an authoritative cheapest-available claim (see CLAUDE.md). Used only
+ * by build_shopping_list's per-ingredient best-value -- the single-item
+ * flow keeps searchVariety's full guarantee unchanged.
+ */
+export async function searchVarietyFirstPageOnly(query: string): Promise<WooliesProductFull[]> {
+  const { firstPage } = await broadenVarietyQuery(query);
+  return firstPage;
 }
