@@ -303,32 +303,73 @@ variety search finds nothing, or nothing survives the exclusion heuristic.
 `get_item`, `record_purchase`, `filter_staples`, `ingest_receipt`,
 `ingest_order_text`, and `suggest_alternatives` match free-text names
 (receipt OCR noise, plurals, chat phrasing) against tracked items via
-`findBestItemMatch` (`src/fuzzy.ts`), three passes in order: exact match,
-then whole-word substring match, then Fuse.js fuzzy search as a fallback.
-`sync_from_craft` deliberately does *not* use this — see above.
+`findBestItemMatch` (`src/fuzzy.ts`), four passes in order: exact match,
+forward whole-word substring match, reverse whole-word substring match, then
+Fuse.js fuzzy search as a fallback. `sync_from_craft` deliberately does *not*
+use this — see above.
 
-**The whole-word substring pass exists because Fuse alone silently failed
-on real-world data.** Found while verifying `suggest_alternatives`: Fuse's
-length-normalized edit-distance score means a short, generic staple name
-(most of the actual synced list — "Bread", "Milk", "Salt", "Pepper", "Rice")
-scores as *no match at all* against a long, verbose real product line (e.g.
-"Woolworths Bread Wholemeal 700g") — confirmed directly, and not fixable via
-`ignoreLocation`/`distance` tuning, since the penalty comes from the length
-mismatch itself, not match position. This affected the majority of the real
-Craft-synced staples list (10 of 12 tracked items at the time this was
-found), meaning most real receipt/order imports would have silently landed
-as `unmatched` — this was caught before any real purchase history existed
-to be lost, not after.
+**The forward whole-word substring pass exists because Fuse alone silently
+failed on real-world data.** Found while verifying `suggest_alternatives`:
+Fuse's length-normalized edit-distance score means a short, generic staple
+name (most of the actual synced list — "Bread", "Milk", "Salt", "Pepper",
+"Rice") scores as *no match at all* against a long, verbose real product
+line (e.g. "Woolworths Bread Wholemeal 700g") — confirmed directly, and not
+fixable via `ignoreLocation`/`distance` tuning, since the penalty comes from
+the length mismatch itself, not match position. This affected the majority
+of the real Craft-synced staples list (10 of 12 tracked items at the time
+this was found), meaning most real receipt/order imports would have
+silently landed as `unmatched` — this was caught before any real purchase
+history existed to be lost, not after.
 
 The fix checks whether the item's name appears as a `\b`-anchored whole word
-(or word sequence) inside the query before falling back to Fuse — this is
-the missing direction; Fuse's own strength (a short query like "oat milk"
-against a longer canonical name) was never broken and still works via the
-same fallback. Word-boundary anchoring specifically avoids matching inside
-partial words or compounds ("Rice" must not match inside "apprice" or
-"Gingerbread"). When more than one staple's name appears in the query (e.g.
-both "Milk" and "Oat Milk" are tracked and the line says "Oat Milk"), the
-longest — most specific — match wins.
+(or word sequence) inside the query. Word-boundary anchoring specifically
+avoids matching inside partial words or compounds ("Rice" must not match
+inside "apprice" or "Gingerbread"). When more than one staple's name appears
+in the query (e.g. both "Milk" and "Oat Milk" are tracked and the line says
+"Oat Milk"), the longest — most specific — match wins.
+
+**That pass was, in turn, too permissive: a parallel investigation found it
+was actively corrupting real purchase history.** "Harvest snaps pea crisps
+salt & vinegar 120g" and "Pico organic chocolate bar sea salt 80g" both
+matched "Salt", and "Pics peanut butter crunchy 380g" matched "Butter" — a
+short generic staple name appearing as an incidental flavor/ingredient
+word, not the actual product, in all three. A first attempt at a general
+fix (reject a match when the staple name is too small a proportion of the
+query's words) failed against real data: "Ploughmans bakery toast bread
+country grains 750g" is a genuine "Bread" match with the *identical*
+word-count shape (1 of 6 real words) as the bad "Salt" matches — no
+positional/proportional signal separates a verbose-but-genuine match from a
+verbose-but-wrong one, since both dilute the ratio the same way. The actual
+fix rejects a match based on what's *immediately adjacent* to it: flanked by
+`&`/`and` (catches "X & Y" flavor-pairing generally, e.g. "salt & vinegar"),
+or immediately preceded by a word from `COMPOUND_MODIFIER_WORDS` — a small,
+deliberately open-ended list (`peanut`, `sea`, `garlic`, `brown`, `bell`,
+...) of words that turn a generic staple into a different product/flavor
+when placed right before it. Documented and maintained the same way as
+`bestValue.ts`'s `SUSPECT_WORDS`: a best-effort heuristic verified against
+real cases, not a semantic guarantee — extend it when a new false-positive
+pattern turns up, don't try to derive a universal rule.
+
+**The reverse pass is a separate, symmetric gap in the other direction:** a
+tracked staple isn't always named with a short generic category — a real
+staple named "Otis oat milk the everyday one" was invisible to a plain
+"milk" lookup (`suggest_alternatives`, `get_item`, and `record_purchase` all
+take a short name and need to find whichever staple it refers to), since the
+forward pass only handles a short *item* name inside a long query, never a
+short *query* inside a long item name. The reverse pass checks the other
+direction — does the query appear as a whole word/phrase inside a longer
+item name — guarded by a small stopword list (`the`, `and`, `one`, ...) so a
+short query can't accidentally match a stray filler word buried inside a
+long item name. No `COMPOUND_MODIFIER_WORDS`-style gate here: this is the
+read/lookup direction, not blind text-mining of a noisy receipt line, so the
+corruption risk above doesn't apply the same way.
+
+Four real purchase events on real production data were misattributed by the
+over-permissive forward pass before this fix (three against "Salt", one
+against "Butter"). Cleanup (removing those events and running
+`recomputeItemSummary()` against both items) is deliberately sequenced
+*after* this fixed matcher is deployed and live, not before — so nothing can
+re-corrupt Salt/Butter in the gap between cleanup and deployment.
 
 ## Known open items (not yet resolved — see CLAUDE.md)
 
