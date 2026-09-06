@@ -34,6 +34,24 @@ rather than one generic "oat milk" — each staple's purchase history and
 restock rate are computed independently, so lumping different products
 together blends their buying patterns into one misleading rate.
 
+## Suggestions and purchase history
+
+When you ask for something like "add cheese," the recommendation depends on
+what's known about it: if you've bought it before, it recommends whichever
+option you buy most often and shows alternatives of the same type (other Edam
+cheeses, say). If you haven't, it bases alternatives on anything related
+already in your cart, or falls back to a general search if not. Either way,
+it always includes a best-value pick — the cheapest price-per-unit option of
+that type — regardless of which path found the recommendation.
+
+These suggestions are only as good as your purchase history, so recording it
+matters. Until Woolworths fixes their order-history API (at which point this
+becomes automatic), that's manual: copy the whole order — including its date
+and order/invoice number — from the Orders page on the Woolworths website,
+and paste it into either the `#order-import` Discord channel or a Claude.ai
+conversation with the staples-host connector. That paste becomes real
+purchase history, which is exactly what the recommendations above draw on.
+
 ## More detail
 
 - [CLAUDE.md](CLAUDE.md) — full build spec and architecture.
