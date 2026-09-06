@@ -48,6 +48,7 @@ loaded if present). See `.env.example` for the full list with comments:
 | `CRAFT_STATUS_DOC_ID` | for `push_status_to_craft` | Document ID of the separate "Staples Status" doc. Must already exist — create it manually in Craft first; this server never creates docs. |
 | `ANTHROPIC_API_KEY` | for `ingest_receipt`, `ingest_order_text` | Used for one-shot Claude extraction (vision for receipts, text for pasted orders) — a single Messages API call per tool call, not an Agent SDK session (see the non-negotiable constraint in CLAUDE.md). A Claude Code OAuth token (`sk-ant-oat01-...`, e.g. from `claude setup-token`) is **not** a substitute — confirmed by testing, it fails with `401 API key is invalid` against the direct Messages API. Needs a real key from console.anthropic.com (`sk-ant-api03-...`). |
 | `EXTRACTION_MODEL` | no (default `claude-sonnet-5`) | Model used for both extraction tools. |
+| `EXTRACTION_MAX_TOKENS` | no (default `4096`) | Output budget for both extraction tools. See "Extraction failure modes" below for why this isn't 1024. |
 | `WOOLIES_MCP_URL` | for `suggest_alternatives` | woolies-mcp's own MCP endpoint, used only to re-resolve a historical `product_name` to a live product — staples-host's one narrow, read-only exception to never calling woolies-mcp itself (see CLAUDE.md's Ownership boundaries). |
 
 Tools that need config they don't have return a clear `isError` result explaining
@@ -236,6 +237,59 @@ involved.
 this tool and `ingest_receipt` — both need `ANTHROPIC_API_KEY`, and generalizing
 the error (it used to be named/worded for vision specifically) avoided a
 second near-duplicate class.
+
+## Extraction failure modes
+
+Both `ingest_receipt` and `ingest_order_text` used to silently degrade into
+an empty result (`items: []`, no error) whenever their one-shot extraction
+call's response was truncated or didn't contain parseable JSON — the code
+had no way to tell that apart from "this document genuinely has no items,"
+a real, legitimate result the extraction prompts explicitly allow.
+
+**Confirmed live against a real 3-page, ~29-item Woolworths order
+confirmation (`CD43796389`)**: `ingest_order_text` reported "No item lines
+were extracted from the text" even though the document was full of real
+items. The actual failure: the model's response hit
+`stop_reason: "max_tokens"` mid-array with the old `max_tokens: 1024` —
+critically, with no `thinking` param set, this model defaults to *adaptive*
+thinking, which alone consumed 749 of those 1024 tokens on internal
+reasoning before writing any visible output, leaving no room to finish the
+JSON. `parseExtraction()`'s regex-based JSON search (`/\{[\s\S]*\}/`) found
+no closing brace in the truncated text and silently returned `{ items: [] }`
+— no exception, no error, nothing distinguishing it from a genuinely
+item-less message.
+
+Two independent fixes, both needed:
+
+1. **`thinking: { type: "disabled" }`** on both extraction calls — a
+   mechanical extract-into-JSON task gets no quality benefit from reasoning,
+   and disabling it frees the entire `EXTRACTION_MAX_TOKENS` budget for
+   actual output. Confirmed this alone recovers nearly all of the previously
+   lost headroom (the same real document extracted completely with the
+   budget raised only slightly above the old 1024, once thinking was off).
+2. **`EXTRACTION_MAX_TOKENS` raised to 4096** anyway, for real margin beyond
+   this one document rather than a value that just barely clears it —
+   re-verified against the same real order afterward: all 29 items extracted
+   correctly, including every multi-line-wrapped item name, both `(Sub)`
+   substitution lines (each correctly recording only the actually-supplied
+   product, not the originally-ordered-but-unsupplied one), and correctly
+   ignoring the repeated per-page header/footer blocks and "Ask Olive"
+   support boilerplate.
+
+Neither fix addresses the underlying silent-failure *shape*, since some
+future document could still exceed whatever ceiling is set. `src/extractionGuard.ts`'s
+`assertCleanCompletion()` now throws if `stop_reason` isn't `end_turn` (the
+only value meaning "finished, nothing cut off" — `max_tokens`,
+`stop_sequence`, `tool_use`, `pause_turn`, `refusal`, and
+`model_context_window_exceeded` are all treated as a real failure), and
+`extractJsonObject()` throws instead of returning a default if no JSON
+object can be found or parsed once completion is already confirmed clean.
+Both tools' existing top-level `try/catch` already turns a thrown error into
+a proper `isError` tool result — verified this fires correctly (deliberately
+forcing truncation with a tiny `EXTRACTION_MAX_TOKENS` produced a clear
+thrown error, not an empty result), and verified a genuinely item-less
+message ("hey, are we out of milk?") still returns cleanly with no error, so
+the two cases stay distinguishable.
 
 ## suggest_alternatives
 

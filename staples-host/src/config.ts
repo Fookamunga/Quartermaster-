@@ -56,6 +56,22 @@ export const CRAFT_STATUS_DOC_ID = process.env.CRAFT_STATUS_DOC_ID ?? null;
 export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? null;
 export const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL ?? "claude-sonnet-5";
 
+// Output budget for both one-shot extraction calls (receipt vision, order-
+// text parsing). Confirmed live against a real 3-page, ~29-item order
+// confirmation that the previous 1024 was nowhere near enough: with no
+// `thinking` param set, this model defaults to adaptive thinking, which
+// alone consumed 749 of the 1024 tokens on that document before writing any
+// visible output, truncating the JSON mid-array and silently producing an
+// empty result. Both extraction calls now explicitly set
+// `thinking: { type: "disabled" }` (thinking adds no value for a mechanical
+// extract-into-JSON task), so this budget is for visible output only --
+// re-verified against that same real document afterward: all 29 items
+// extracted cleanly, comfortable headroom left in this budget. Sized with
+// real margin for a larger order too, not just enough to pass one test case.
+export const EXTRACTION_MAX_TOKENS = process.env.EXTRACTION_MAX_TOKENS
+  ? Number(process.env.EXTRACTION_MAX_TOKENS)
+  : 4096;
+
 // woolies-mcp's own MCP endpoint (the same Funnel URL used elsewhere, e.g.
 // https://<funnel-host>/mcp/<token>). Used only by suggest_alternatives, to
 // re-resolve a historical product_name to a live product via woolies-mcp's

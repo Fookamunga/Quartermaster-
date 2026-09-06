@@ -1,5 +1,6 @@
 import { getAnthropicClient } from "./anthropicClient.js";
-import { EXTRACTION_MODEL } from "./config.js";
+import { EXTRACTION_MAX_TOKENS, EXTRACTION_MODEL } from "./config.js";
+import { assertCleanCompletion, extractJsonObject } from "./extractionGuard.js";
 
 export interface ReceiptExtraction {
   lines: string[];
@@ -37,7 +38,13 @@ export async function extractReceiptLines(
   const client = getAnthropicClient("ingest_receipt's vision extraction");
   const response = await client.messages.create({
     model: EXTRACTION_MODEL,
-    max_tokens: 1024,
+    max_tokens: EXTRACTION_MAX_TOKENS,
+    // See orderTextExtraction.ts's identical setting: a mechanical
+    // extract-into-JSON task gets nothing from thinking, and leaving it to
+    // default to adaptive thinking is exactly what ate the output budget on
+    // a real large order text extraction -- same risk applies here for a
+    // large/complex receipt photo.
+    thinking: { type: "disabled" },
     messages: [
       {
         role: "user",
@@ -52,31 +59,26 @@ export async function extractReceiptLines(
     ],
   });
 
+  assertCleanCompletion(response, "Receipt vision extraction");
+
   const textBlock = response.content.find((b) => b.type === "text");
   if (!textBlock || textBlock.type !== "text") {
-    return { lines: [], order_reference: null };
+    throw new Error("Receipt vision extraction returned no text content.");
   }
 
   return parseExtraction(textBlock.text);
 }
 
 function parseExtraction(text: string): ReceiptExtraction {
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return { lines: [], order_reference: null };
-
-  try {
-    const parsed = JSON.parse(match[0]);
-    const lines = Array.isArray(parsed.items)
-      ? parsed.items.filter(
-          (v: unknown): v is string => typeof v === "string" && v.trim().length > 0,
-        )
-      : [];
-    const order_reference =
-      typeof parsed.order_reference === "string" && parsed.order_reference.trim().length > 0
-        ? parsed.order_reference
-        : null;
-    return { lines, order_reference };
-  } catch {
-    return { lines: [], order_reference: null };
-  }
+  const parsed = extractJsonObject(text, "Receipt vision extraction");
+  const lines = Array.isArray(parsed.items)
+    ? parsed.items.filter(
+        (v: unknown): v is string => typeof v === "string" && v.trim().length > 0,
+      )
+    : [];
+  const order_reference =
+    typeof parsed.order_reference === "string" && parsed.order_reference.trim().length > 0
+      ? parsed.order_reference
+      : null;
+  return { lines, order_reference };
 }

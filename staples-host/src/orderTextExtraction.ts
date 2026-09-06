@@ -1,5 +1,6 @@
 import { getAnthropicClient } from "./anthropicClient.js";
-import { EXTRACTION_MODEL } from "./config.js";
+import { EXTRACTION_MAX_TOKENS, EXTRACTION_MODEL } from "./config.js";
+import { assertCleanCompletion, extractJsonObject } from "./extractionGuard.js";
 import { todayIso } from "./replenishment.js";
 
 export interface OrderTextExtraction {
@@ -52,7 +53,14 @@ export async function extractOrderText(text: string): Promise<OrderTextExtractio
   const client = getAnthropicClient("ingest_order_text's text extraction");
   const response = await client.messages.create({
     model: EXTRACTION_MODEL,
-    max_tokens: 1024,
+    max_tokens: EXTRACTION_MAX_TOKENS,
+    // This is a mechanical extract-into-JSON task -- thinking adds latency
+    // and eats into the output budget for no quality benefit. Explicit
+    // rather than just omitting the param: without it, this model defaults
+    // to adaptive thinking, which is exactly what caused the real
+    // 3-page-order failure this was built to fix (see EXTRACTION_MAX_TOKENS
+    // in config.ts).
+    thinking: { type: "disabled" },
     messages: [
       {
         role: "user",
@@ -61,35 +69,30 @@ export async function extractOrderText(text: string): Promise<OrderTextExtractio
     ],
   });
 
+  assertCleanCompletion(response, "Order text extraction");
+
   const textBlock = response.content.find((b) => b.type === "text");
   if (!textBlock || textBlock.type !== "text") {
-    return { date: null, order_reference: null, items: [] };
+    throw new Error("Order text extraction returned no text content.");
   }
 
   return parseExtraction(textBlock.text);
 }
 
 function parseExtraction(text: string): OrderTextExtraction {
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return { date: null, order_reference: null, items: [] };
-
-  try {
-    const parsed = JSON.parse(match[0]);
-    const items = Array.isArray(parsed.items)
-      ? parsed.items.filter(
-          (v: unknown): v is string => typeof v === "string" && v.trim().length > 0,
-        )
-      : [];
-    const date =
-      typeof parsed.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)
-        ? parsed.date
-        : null;
-    const order_reference =
-      typeof parsed.order_reference === "string" && parsed.order_reference.trim().length > 0
-        ? parsed.order_reference
-        : null;
-    return { date, order_reference, items };
-  } catch {
-    return { date: null, order_reference: null, items: [] };
-  }
+  const parsed = extractJsonObject(text, "Order text extraction");
+  const items = Array.isArray(parsed.items)
+    ? parsed.items.filter(
+        (v: unknown): v is string => typeof v === "string" && v.trim().length > 0,
+      )
+    : [];
+  const date =
+    typeof parsed.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)
+      ? parsed.date
+      : null;
+  const order_reference =
+    typeof parsed.order_reference === "string" && parsed.order_reference.trim().length > 0
+      ? parsed.order_reference
+      : null;
+  return { date, order_reference, items };
 }
