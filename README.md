@@ -6,8 +6,9 @@ an optional Discord bot on top for a chat-based front end.
 
 ## Components
 
-- **woolies-mcp** — owns Woolworths NZ login, product search, and cart/order
-  actions. External dependency, not built in this repo.
+- **[woolies-mcp](https://github.com/adrian-baker/woolies-mcp)** — owns
+  Woolworths NZ login, product search, and cart/order actions. External
+  dependency, not built in this repo.
 - **[staples-host](staples-host/)** — tracks your staples: what you buy, how
   often, restock rates, cheaper alternatives, best value across brands.
 
