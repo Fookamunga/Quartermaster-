@@ -133,7 +133,7 @@ queries. Only staples-host touches this volume.
   the resolved results by `sku`/`variantKey` (not by the raw extracted text,
   which varies across receipts/orders for the same real product), ranks by
   frequency within that window with recency as the tiebreaker, and returns
-  the #1 result as `top_pick` (`{name, sku, price}` or `null`) plus up to 4
+  the #1 result as `top_pick` (`{name, sku, price}` or `null`) plus up to 5
   more as `other_candidates` — `top_pick` is its own explicit field, not
   array position 0, specifically so a caller can't lose track of which
   result is the ranked winner (see the workspace CLAUDE.md's ✅-marking
@@ -143,6 +143,23 @@ queries. Only staples-host touches this volume.
   resolve to a live product anymore. Identically callable from Claude
   mobile/desktop directly, not just discordbot-host's cold session — same
   boundary as every other staples-host tool.
+
+  **Live-search backfill when history alone can't fill 5 `other_candidates`**
+  (`alternatives.ts`): a real household can easily have bought only *one*
+  distinct product for a given staple ever — confirmed live, a real "milk"
+  lookup with 2 purchase events (both the same Otis oat milk) had 0
+  `other_candidates` from history alone. Rather than showing `top_pick` with
+  nothing else, the remaining slots are filled from a live same-variety
+  search, using the *same* `deriveVarietyQuery` derivation `get_best_value`
+  uses (see below) — so the backfilled options genuinely relate to
+  `top_pick`, not an arbitrary search. Excludes anything already *shown*
+  (`top_pick` itself, plus whichever historical others made the display
+  cap) by `variantKey`, takes results in the live search's own relevance
+  order with no new ranking, and stops once the slots are filled — same
+  "just truncate, don't re-rank" rule as Tier 2/3's numbered lists. Never
+  fabricates: a connection failure or a variety search that finds nothing
+  usable just means fewer than 5 `other_candidates`, same as before this
+  existed.
 
   **Best-value entry (additive, never replaces/reorders the ranked
   candidates):** once the top-ranked candidate resolves, one further search
@@ -165,6 +182,35 @@ queries. Only staples-host touches this volume.
   says so -- confirmed live this is bounded (a variety-level query like
   "edam cheese" needed 2 pages for 23 results), not the dozens of pages an
   unnarrowed generic term like "cheese" (~475 matches) would need.
+
+  **The brand/size strip alone isn't always broad enough, and this was a
+  real, retroactive correctness gap, not just groundwork for the live-search
+  backfill above.** A product whose brand has its own sub-line/product name
+  baked into the residual -- e.g. Otis "Oat Milk The Everyday One" -- leaves
+  wording no other brand would use, so the plain query only ever found that
+  one product back. Confirmed live: `suggest_alternatives("milk")` was
+  reporting Otis's own oat milk as its own "best value" ($4.69/1L),
+  silently missing a genuinely cheaper cross-brand option (So Good, at
+  $3.39/1L) that existed the whole time. Not caught earlier because the
+  original test case ("Mainland Cheese Edam 500g" -> "Cheese Edam") had no
+  brand sub-line wording to strip. **Any `best_value` result shown before
+  this fix, for a product with this shape of naming, may have missed a
+  genuinely cheaper cross-brand alternative** -- not specific to Otis/milk,
+  applies to any brand whose product names carry their own sub-line/product
+  naming beyond the plain brand + size.
+
+  Fixed by `wooliesClient.ts`'s `searchVariety()`, shared by this tool and
+  the live-search backfill above (both start from the same derived query):
+  if the query's first page returns fewer than 5 results, retries with the
+  query trimmed one word from the end at a time -- confirmed live, "Oat Milk
+  The Everyday One" and each single trim down to "Oat Milk The" all return
+  only Otis's own 1-3 products; "Oat Milk" (trimmed further) returns 30,
+  with genuine cross-brand alternatives at the top. No curated word list
+  (the real catalogue is checked directly, same reasoning as
+  `searchTopProductFull`'s own retry in the ingest direction) and no
+  separate attempt cap the way that function has one (this runs once or
+  twice per `suggest_alternatives` call, not up to 10 times, so the latency
+  budget is comfortably wider) -- only the same word-count floor.
 
   **This reopens exactly the coverage-checking cost the same-line version
   avoided, and accepts it deliberately for a materially better answer.**

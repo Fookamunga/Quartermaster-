@@ -1,4 +1,5 @@
-import { searchAllPages, type WooliesProductFull } from "./wooliesClient.js";
+import { deriveVarietyQuery } from "./varietyQuery.js";
+import { searchVariety, type WooliesProductFull } from "./wooliesClient.js";
 
 export interface BestValueResult {
   name: string;
@@ -15,20 +16,6 @@ export interface BestValueResult {
 // pick's own name doesn't -- deliberately short and conservative rather
 // than an attempt at exhaustive category detection.
 const SUSPECT_WORDS = ["cracker", "crackers", "snack", "biscuit", "biscuits", "chip", "chips", "dip"];
-
-function stripBrandAndSize(name: string, brand: string | null): string {
-  let s = name;
-  if (brand) {
-    s = s.replace(new RegExp(`\\b${escapeRegExp(brand)}\\b`, "i"), "");
-  }
-  // Trailing (or embedded) size/weight pattern, e.g. "500g", "1kg", "750ml", "2L".
-  s = s.replace(/\b\d+(\.\d+)?\s*(g|kg|ml|l)\b/gi, "");
-  return s.replace(/\s+/g, " ").trim();
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 function hasSuspectWord(name: string, topPickName: string): boolean {
   const topWords = new Set(topPickName.toLowerCase().split(/\W+/));
@@ -59,12 +46,12 @@ export async function findBestValue(topPick: {
   const topParsed = parseUnitPrice(topPick.unitPrice);
   if (!topParsed) return null; // nothing to compare a variety search against
 
-  const varietyQuery = stripBrandAndSize(topPick.name, topPick.brand);
+  const varietyQuery = deriveVarietyQuery(topPick.name, topPick.brand);
   if (!varietyQuery) return null;
 
   let candidates: WooliesProductFull[];
   try {
-    candidates = await searchAllPages(varietyQuery);
+    candidates = await searchVariety(varietyQuery);
   } catch {
     return null; // connection/protocol failure -- degrade to no best-value entry
   }

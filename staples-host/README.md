@@ -312,12 +312,31 @@ resolved results are deduped by `sku`/`variantKey`, not by the raw
 differently across receipts/orders (OCR and text extraction aren't
 consistent), and deduping on raw text first would fragment one frequently-
 bought product's count. Ranked by frequency within that 10-event window,
-recency as the tiebreaker only. Returns up to 5 as `{name, sku, price}`,
-fully resolved and ready to present — or an empty list (never a guess) if
-`item_name` isn't a tracked staple, has no purchase history with a
-`product_name`, or nothing historical resolves to a live product anymore
-(discontinued/delisted products are dropped individually, not treated as a
-failure of the whole call).
+recency as the tiebreaker only. Returns `top_pick` plus up to 5
+`other_candidates` as `{name, sku, price}`, fully resolved and ready to
+present — or an empty list (never a guess) if `item_name` isn't a tracked
+staple, has no purchase history with a `product_name`, or nothing
+historical resolves to a live product anymore (discontinued/delisted
+products are dropped individually, not treated as a failure of the whole
+call).
+
+**When history alone doesn't fill all 5 `other_candidates`, the rest are
+backfilled from a live same-variety search** (`backfillFromLiveSearch` in
+`alternatives.ts`). A real household can easily have only ever bought one
+distinct product for a given staple — confirmed live, a real "milk" lookup
+(2 purchase events, both the same Otis oat milk) had 0 historical
+`other_candidates`. Uses the exact same `deriveVarietyQuery` derivation
+`get_best_value` uses (see below) via the shared `searchVariety()`, so the
+backfilled options genuinely relate to `top_pick` rather than being an
+arbitrary search. Excludes anything already *shown* (`top_pick` itself,
+plus whichever historical others made the display cap) by `variantKey`,
+takes results in the live search's own relevance order with no new
+ranking — same "just truncate" rule as Tier 2/3's numbered lists — and
+stops once the slots are filled. Verified against the real Otis case: the 5
+backfilled candidates were all genuine cross-brand oat milk (So Good,
+Boring, Vitasoy, plus Otis's own other variant), and a dedup regression
+(synthetic history with one real historical "other" alongside the top pick)
+confirmed that product isn't duplicated by the backfill.
 
 **Resolving a historical `product_name` retries with the query trimmed from
 the end if the full phrase comes back empty** (`searchTopProductFull` in
@@ -351,10 +370,38 @@ resolves, one further search compares it against the same *variety* —
 any brand, e.g. all Edam cheese, not narrowed to the top pick's own brand.
 The variety query is derived deterministically from the top pick's own
 `name`/`brand` (strip the brand and a trailing size like `500g`, e.g.
-"Mainland Cheese Edam 500g" → "Cheese Edam") — no new tool parameter, no
-dependence on the agent extracting a good search term. Follows
-`search_products` pagination (`searchAllPages` in `wooliesClient.ts`, capped
-at 5 pages as a safety net) until `complete: true` — confirmed live this is
+"Mainland Cheese Edam 500g" → "Cheese Edam", via `deriveVarietyQuery` in
+`src/varietyQuery.ts` — shared with the live-search backfill above) — no new
+tool parameter, no dependence on the agent extracting a good search term.
+
+**The brand/size strip alone isn't always broad enough, and this was a real,
+retroactive correctness gap, not just groundwork for the backfill feature.**
+A product whose brand has its own sub-line/product name baked into the
+residual — e.g. Otis "Oat Milk The Everyday One" — leaves wording no other
+brand would use, so the plain query only ever found that one product back.
+Confirmed live: `suggest_alternatives("milk")` was reporting Otis's own oat
+milk as its own "best value" ($4.69/1L), silently missing a genuinely
+cheaper cross-brand option (So Good, at $3.39/1L) that existed the whole
+time. Not caught earlier because the original test case ("Mainland Cheese
+Edam 500g" → "Cheese Edam") had no brand sub-line wording to strip. **Any
+`best_value` result shown before this fix, for a product with this shape of
+naming, may have missed a genuinely cheaper cross-brand alternative** — not
+specific to Otis/milk, applies to any brand whose names carry their own
+sub-line/product naming beyond the plain brand + size.
+
+Fixed by `wooliesClient.ts`'s `searchVariety()`: if the derived query's
+first page returns fewer than 5 results, retries with the query trimmed one
+word from the end at a time — confirmed live, "Oat Milk The Everyday One"
+and each single trim down to "Oat Milk The" all return only Otis's own 1-3
+products; "Oat Milk" (trimmed further, to the same word-count floor
+`searchTopProductFull` uses) returns 30, with genuine cross-brand
+alternatives at the top. No curated word list (same reasoning as
+`searchTopProductFull`'s own retry) and no separate attempt cap the way
+that function has one — this runs once or twice per `suggest_alternatives`
+call, not up to 10 times, so the latency budget is comfortably wider. Once
+a broad-enough query is found, re-fetches it with full `searchAllPages`
+pagination (capped at 5 pages as a safety net) so the cheapest-across-
+everything claim keeps its coverage guarantee — confirmed live this is
 typically 1-2 pages for a variety query, not the dozens a bare generic term
 would need.
 

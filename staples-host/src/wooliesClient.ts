@@ -224,3 +224,60 @@ export async function searchAllPages(query: string): Promise<WooliesProductFull[
   }
   return all;
 }
+
+// "Good enough to stop trimming" threshold for searchVariety below -- not a
+// promise of 5 usable results (SUSPECT_WORDS/denomination-grouping filtering
+// happens downstream in bestValue.ts, and the numbered-list caller takes
+// only as many as it needs), just enough that the query is plausibly a real
+// shared category rather than one brand's own product line.
+const MIN_VARIETY_RESULTS = 5;
+
+/**
+ * Same-variety search with query broadening -- shared by findBestValue
+ * (bestValue.ts) and Tier 1's live-search backfill (alternatives.ts), both
+ * of which start from deriveVarietyQuery's brand+size-stripped residual.
+ * That residual isn't always a real shared category: a product whose brand
+ * has its own sub-line/product name baked in (e.g. Otis "Oat Milk The
+ * Everyday One", vs. a generic "Cheese Edam") leaves residual wording no
+ * other brand would use, so the plain query only ever finds that one
+ * product back. Confirmed live: "Oat Milk The Everyday One" and each single
+ * trim down to "Oat Milk The" all return only Otis's own 1-3 products;
+ * "Oat Milk" (trimmed to the MIN_QUERY_WORDS floor) returns 30, with
+ * genuine cross-brand alternatives (So Good, Boring, Vitasoy, ...) right at
+ * the top.
+ *
+ * This was a real, silent gap in findBestValue before this function existed
+ * -- it was quietly reporting a product like Otis's oat milk as its own
+ * "best value" whenever its variety query stayed this narrow, missing
+ * genuinely cheaper cross-brand options a shopper would want to know about.
+ * Not caught earlier because the original test case ("Mainland Cheese Edam
+ * 500g" -> "Cheese Edam") happened to have no brand sub-line wording to
+ * strip.
+ *
+ * Retries with the query trimmed one word from the end at a time if the
+ * current attempt's first page returns fewer than MIN_VARIETY_RESULTS, down
+ * to the MIN_QUERY_WORDS floor -- same no-curated-word-list reasoning as
+ * searchTopProductFull (the real catalogue is the ground truth, checked
+ * directly, rather than guessing which words are brand-line noise). No
+ * separate attempt cap unlike searchTopProductFull's: that one is called up
+ * to 10 times per suggest_alternatives invocation (once per historical
+ * event), so its retry depth is capped to bound worst-case latency: this
+ * runs at most once or twice per invocation, so the latency budget is
+ * comfortably wider. Once a broad-enough query is found (cheaply, via a
+ * single-page check), re-fetches it with full pagination so
+ * findBestValue's cheapest-across-everything claim keeps its existing
+ * coverage guarantee.
+ */
+export async function searchVariety(query: string): Promise<WooliesProductFull[]> {
+  const words = query.trim().split(/\s+/).filter(Boolean);
+  let broadenedQuery = query;
+
+  for (let wordCount = words.length; wordCount >= Math.min(MIN_QUERY_WORDS, words.length); wordCount--) {
+    const attemptQuery = words.slice(0, wordCount).join(" ");
+    const { products } = await callSearchProducts(attemptQuery, 1);
+    broadenedQuery = attemptQuery;
+    if (products.length >= MIN_VARIETY_RESULTS) break;
+  }
+
+  return searchAllPages(broadenedQuery);
+}
