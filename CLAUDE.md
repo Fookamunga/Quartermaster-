@@ -127,8 +127,15 @@ queries. Only staples-host touches this volume.
 - `list_staples()` — every staple's name, status, last purchase date, and
   restock rate. Covers both "show me my staples" and "show my restock
   rate"/"show my staples update status" — same data, rendered differently by
-  whichever front end asked (a full detailed view vs. a simple name +
-  restock rate list) — no separate status-query tool needed.
+  whichever front end asked, no separate status-query tool needed:
+  - "show me my staples" (the default, full-detail view) — one combined
+    line per item: `<name> — <last bought <date> or no purchase on record>
+    — <restock rate: every <N> days or no restock rate set yet>`, e.g.
+    `Bread — last bought 2025-08-18 — restock rate: every 5 days` /
+    `Fish sauce — no purchase on record — no restock rate set yet`.
+  - "show my restock rate"/"show my staples update status" — simpler:
+    just `<name> — <restock rate: every <N> days or no restock rate set
+    yet>`, no last-bought part.
 - `get_item(name)`
 - `record_purchase(item_name, date, source, raw_ref?)` — fuzzy-match, append event,
   update summary

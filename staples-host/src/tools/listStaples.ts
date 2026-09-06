@@ -10,10 +10,18 @@ export function registerListStaples(server: McpServer): void {
       title: "List staples",
       description:
         "List every staple item with its current status (not_due/due/overdue), " +
-        "last purchase date, and restock rate. Present replenishment_interval_days " +
-        "to the user as 'restock rate' (e.g. 'restock rate: every 5 days', or " +
-        "'no restock rate set yet' when null) -- never say 'interval' in " +
-        "user-facing text.",
+        "last purchase date, and restock rate. Never say 'interval' in " +
+        "user-facing text -- always 'restock rate'. Two rendering modes " +
+        "depending on what was asked for:\n" +
+        "(a) 'show me my staples' (the default, full-detail view) -- one " +
+        "combined line per item, exactly: '<name> — <last bought <date> " +
+        "OR no purchase on record> — <restock rate: every <N> days OR " +
+        "no restock rate set yet>'. For example:\n" +
+        "Bread — last bought 2025-08-18 — restock rate: every 5 days\n" +
+        "Fish sauce — no purchase on record — no restock rate set yet\n" +
+        "(b) 'show my restock rate'/'show my staples update status' -- " +
+        "simpler, just '<name> — <restock rate: every <N> days OR no " +
+        "restock rate set yet>', no last-bought part.",
     },
     async () => {
       const db = await readDb();

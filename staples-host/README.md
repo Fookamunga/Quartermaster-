@@ -139,6 +139,32 @@ stored field against it on read, so the stale value passed straight
 through. Re-deriving on every read closes that whole class of risk instead
 of just the one instance.
 
+## list_staples
+
+Returns `status`, `last_purchased`, and `replenishment_interval_days`/
+`interval_confidence` per item — field names unchanged, schema untouched.
+The tool's own `description` specifies the exact user-facing rendering
+(never "interval," always "restock rate"), since that's what actually
+shapes the agent's generated reply text, not just this doc:
+
+- **"show me my staples"** (default, full detail) — one combined line per
+  item: `<name> — <last bought <date> or no purchase on record> — <restock
+  rate: every <N> days or no restock rate set yet>`, e.g.
+  `Bread — last bought 2025-08-18 — restock rate: every 5 days` /
+  `Fish sauce — no purchase on record — no restock rate set yet`.
+- **"show my restock rate"/"show my staples update status"** — simpler:
+  just `<name> — <restock rate: ... or no restock rate set yet>`, no
+  last-bought part.
+
+Verified against the real production item list (a local copy, read-only
+against the NAS — 13 real items, plus two given a synthetic restock rate
+purely for test coverage, since none of the real items currently have one
+set): confirmed the registered tool's `description` string is exactly this
+spec, and manually rendered every real item against the template — all four
+combinations (date present/absent × restock rate present/absent) produced
+the correct line, including the exact `Bread`/`Fish sauce` examples above
+verbatim against real data.
+
 ## add_staple / remove_staple / update_staple
 
 Item management is fully conversational now — no Craft, no external sync.
