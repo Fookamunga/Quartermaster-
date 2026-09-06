@@ -15,6 +15,7 @@ import { registerRecordPurchase } from "./tools/recordPurchase.js";
 import { registerRemoveStaple } from "./tools/removeStaple.js";
 import { registerSuggestAlternatives } from "./tools/suggestAlternatives.js";
 import { registerUpdateStaple } from "./tools/updateStaple.js";
+import { startWeeklyReportSentry } from "./weeklyReportSentry.js";
 
 function buildServer(): McpServer {
   const server = new McpServer({ name: "staples-host", version: "0.1.0" });
@@ -142,6 +143,7 @@ app.delete("/mcp/:token", (_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`staples-host listening on port ${PORT}`);
+  startWeeklyReportSentry();
 });
 
 process.on("SIGINT", () => process.exit(0));

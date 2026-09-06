@@ -60,6 +60,23 @@ export const EXTRACTION_MAX_TOKENS = process.env.EXTRACTION_MAX_TOKENS
   ? Number(process.env.EXTRACTION_MAX_TOKENS)
   : 4096;
 
+// Discord webhook URL for the weekly restock report (see weeklyReportSentry.ts)
+// -- staples-host posts directly, bypassing discordbot-host's conversational
+// flow entirely, since this is staples-host's own scheduled job, not
+// something that should require an active Discord bot session. No default:
+// unset means the sentry still runs its weekly check but skips posting,
+// logging a warning once at startup -- same "unset degrades gracefully,
+// never a hard failure" convention as WOOLIES_MCP_URL/MCP_AUTH_TOKEN.
+export const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL ?? null;
+
+// How often the weekly-report sentry checks whether it's currently Sunday
+// 5pm NZ time -- default 15 min, fine-grained enough to reliably catch that
+// one-hour window without needing second-level precision for a once-a-week
+// digest. See weeklyReportSentry.ts.
+export const WEEKLY_REPORT_CHECK_INTERVAL_MS = process.env.WEEKLY_REPORT_CHECK_INTERVAL_MS
+  ? Number(process.env.WEEKLY_REPORT_CHECK_INTERVAL_MS)
+  : 15 * 60 * 1000;
+
 // woolies-mcp's own MCP endpoint (the same Funnel URL used elsewhere, e.g.
 // https://<funnel-host>/mcp/<token>). Used only by suggest_alternatives, to
 // re-resolve a historical product_name to a live product via woolies-mcp's

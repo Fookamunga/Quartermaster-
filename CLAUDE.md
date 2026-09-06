@@ -445,6 +445,55 @@ as authoritative when both exist. Unmatched API events fill gaps, not
 duplicates. Only used when an exact `order_reference` match isn't possible —
 not an equally-authoritative alternative to it.
 
+**Weekly restock report (direct Discord webhook, no discordbot-host
+involvement):** staples-host's own scheduled job — `weeklyReportSentry.ts` —
+posts every Sunday 5pm NZ time (`Pacific/Auckland`, hardcoded the same way as
+`todayIso()` and `nzTime.ts`, not server-local/UTC) directly to a Discord
+webhook, entirely independent of discordbot-host and the Discord bot session.
+This is a deliberate architectural departure from the auth-failure/
+never-tracked sentries above (both live in discordbot-host and call
+staples-host's tools) — this job is staples-host's own, since it needs no
+conversational/agent involvement at all, just a scheduled read of its own
+data plus one HTTP POST.
+
+- **Calculation:** reuses `effectiveIntervalDays`/`computeStatus` exactly as
+  `list_staples`/`get_item` do — no new status concept. For each item with a
+  restock rate and ≥2 purchase events (same event-count gate `computeStatus`
+  already applies — this does mean a freshly-manual item with 0-1 purchases
+  won't appear here, inheriting the same discrepancy already documented
+  above rather than introducing a new one), `daysUntilDue = effectiveIntervalDays
+  − days_since_last_purchased`. Included if `daysUntilDue <= 7` — this single
+  rule subsumes "due" and "overdue" (both land at `daysUntilDue <= 0`)
+  alongside "not due yet but will be within a week," so no separate
+  due/overdue branching is needed. Rendered as two groups, most-urgent-first:
+  ⚠️ already due/overdue, and 🔜 running out within 7 days.
+- **Always posts**, including a positive "nothing due or running out" message
+  when the list is empty — unlike the change-triggered sentries above, a
+  fixed-schedule digest going silent for a week is ambiguous between "all
+  stocked" and "the job silently broke," so this one confirms every week
+  regardless.
+- **Scheduling:** a 15-minute `setInterval` (`WEEKLY_REPORT_CHECK_INTERVAL_MS`)
+  checks the current NZ weekday/hour (`nzTime.ts`) and fires once the window
+  hits Sunday 17:00 — no cron dependency added, matching this codebase's
+  existing zero-cron-dependency, `setInterval`-based sentry pattern. A
+  `lastWeeklyReportSentAt` field on the `Database` object itself (persisted
+  via the existing `withDb`, no new state file) records the NZ-local date
+  last sent, preventing a double-post within the same hour or a re-post
+  after a restart.
+- **Delivery:** a new `DISCORD_WEBHOOK_URL` config value (secret-bearing, no
+  default — same "unset degrades gracefully, never a hard failure" pattern
+  as `WOOLIES_MCP_URL`/`MCP_AUTH_TOKEN` (the sentry still runs its check and
+  logs a warning, just skips the actual POST). Plain `fetch()` to the
+  webhook, no new dependency.
+- **Claude mobile/desktop delivery — investigated and dropped, not a gap left
+  open by omission:** there is no mechanism for an MCP server to push a
+  message into an existing Claude mobile/desktop conversation without an
+  active session already open — MCP is strictly request/response, scoped to
+  a live tool call the client itself initiates, with no server-push
+  primitive in the protocol. The Discord webhook is the only delivery path
+  for this report; documented here as a known limitation rather than a
+  planned follow-up.
+
 ### 3. discordbot-host (rebuild — replaces nanoclaw-host)
 Keep only what a cold, one-shot-per-message architecture needs. This is now a
 fresh build against a real, already-deployed staples-host, not a plan against

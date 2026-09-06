@@ -64,4 +64,10 @@ export interface PurchaseEvent {
 export interface Database {
   items: Item[];
   purchase_events: PurchaseEvent[];
+  // NZ-local ISO date (YYYY-MM-DD) of the Sunday the weekly restock report
+  // last actually posted for -- prevents double-posting within the same
+  // Sunday-5pm-NZ hour (the sentry's tick interval can land more than once
+  // inside that hour) and re-posting after a restart. Null until the first
+  // report ever sends. See weeklyReportSentry.ts.
+  lastWeeklyReportSentAt: string | null;
 }
