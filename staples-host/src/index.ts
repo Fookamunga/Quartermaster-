@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
-import { MCP_AUTH_TOKEN, PORT } from "./config.js";
+import { DISCORD_WEBHOOK_URL, MCP_AUTH_TOKEN, PORT } from "./config.js";
 import { registerAddStaple } from "./tools/addStaple.js";
 import { registerBuildShoppingList } from "./tools/buildShoppingList.js";
 import { registerCheckRestockNeeded } from "./tools/checkRestockNeeded.js";
@@ -76,6 +76,13 @@ if (!MCP_AUTH_TOKEN) {
   console.error(
     "MCP_AUTH_TOKEN is not set -- every /mcp/<token> request will be rejected. " +
       "Set MCP_AUTH_TOKEN to a random secret before exposing this over Funnel.",
+  );
+}
+
+if (!DISCORD_WEBHOOK_URL) {
+  console.warn(
+    "DISCORD_WEBHOOK_URL is not set -- the weekly restock report will run its " +
+      "check every Sunday but skip posting until this is configured.",
   );
 }
 
