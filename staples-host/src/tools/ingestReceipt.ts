@@ -2,10 +2,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AnthropicNotConfiguredError } from "../anthropicClient.js";
-import { findBestItemMatch } from "../fuzzy.js";
 import { extractReceiptLines, type ReceiptExtraction } from "../receiptVision.js";
-import { recomputeItemSummary, todayIso } from "../replenishment.js";
-import { newEventId, withDb } from "../storage.js";
+import { todayIso } from "../replenishment.js";
+import { withDb } from "../storage.js";
+import { recordOrderLines } from "./orderLineRecording.js";
 import { isoDate, toolError, toolJson } from "./shared.js";
 
 export function registerIngestReceipt(server: McpServer): void {
@@ -51,6 +51,7 @@ export function registerIngestReceipt(server: McpServer): void {
       if (lines.length === 0) {
         return toolJson({
           matched: [],
+          already_recorded: [],
           unmatched: [],
           note: "No item lines were extracted from the image.",
         });
@@ -60,58 +61,14 @@ export function registerIngestReceipt(server: McpServer): void {
       const reference = raw_ref ?? `receipt-${randomUUID()}`;
 
       return withDb((db) => {
-        // order_reference is the primary dedup key: if this order was
-        // already recorded (by either ingest path), skip every line item
-        // rather than re-inserting or partially processing. See CLAUDE.md's
-        // reconciliation section.
-        if (
-          order_reference &&
-          db.purchase_events.some((e) => e.order_reference === order_reference)
-        ) {
-          return toolJson({
-            matched: [],
-            unmatched: [],
-            note:
-              `Already imported — order ${order_reference} has already been ` +
-              `recorded; skipping all ${lines.length} line item(s).`,
-          });
-        }
-
-        const matched: { line: string; item_name: string }[] = [];
-        const unmatched: string[] = [];
-
-        for (const line of lines) {
-          const item = findBestItemMatch(db.items, line);
-          if (!item) {
-            unmatched.push(line);
-            continue;
-          }
-
-          db.purchase_events.push({
-            event_id: newEventId(),
-            item_id: item.item_id,
-            date: purchaseDate,
-            source: "receipt_scan",
-            raw_ref: reference,
-            order_reference,
-            // The extracted line text itself, e.g. "Mainland Cheese Edam
-            // 500g" -- distinct from raw_ref, which is the shared receipt
-            // reference (same for every line on this receipt).
-            product_name: line,
-            sku: null,
-            created_at: new Date().toISOString(),
-          });
-
-          const eventsForItem = db.purchase_events.filter(
-            (e) => e.item_id === item.item_id,
-          );
-          recomputeItemSummary(item, eventsForItem);
-          item.updated_at = new Date().toISOString();
-
-          matched.push({ line, item_name: item.name });
-        }
-
-        return toolJson({ matched, unmatched });
+        const { matched, already_recorded, unmatched } = recordOrderLines(
+          db,
+          lines,
+          purchaseDate,
+          order_reference,
+          () => reference,
+        );
+        return toolJson({ matched, already_recorded, unmatched });
       });
     },
   );

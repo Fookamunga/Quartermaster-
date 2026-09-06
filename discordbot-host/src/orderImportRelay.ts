@@ -5,6 +5,12 @@
 // orderImportText.ts.
 export interface IngestResult {
   matched: { line: string; item_name: string }[];
+  // Matched a staple, but that item already has a purchase_event under this
+  // order's reference number -- a duplicate line, not a new purchase. See
+  // CLAUDE.md's "Order-reference dedup" section: dedup is per-line, not
+  // per-order, so a multi-page paste of one order correctly reports its
+  // repeated lines here while still recording the genuinely new ones.
+  already_recorded: { line: string; item_name: string }[];
   unmatched: string[];
   note?: string;
 }
@@ -14,6 +20,10 @@ export function formatIngestResult(result: IngestResult): string {
   if (result.matched.length > 0) {
     lines.push("Recorded:");
     for (const m of result.matched) lines.push(`• ${m.item_name} (from "${m.line}")`);
+  }
+  if (result.already_recorded.length > 0) {
+    lines.push("Already recorded (skipped duplicate):");
+    for (const m of result.already_recorded) lines.push(`• ${m.item_name} (from "${m.line}")`);
   }
   if (result.unmatched.length > 0) {
     lines.push("Unmatched — no matching staple found, add it manually via Craft if it should be tracked:");

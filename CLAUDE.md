@@ -259,15 +259,26 @@ gets before escalating from a soft "due" nudge to an "overdue" alert.
 `order_reference` — the order/invoice number (e.g. Woolworths NZ's "Order
 Confirmation/Invoice Number CD47859895"), extracted by `ingest_receipt`'s vision
 prompt and `ingest_order_text`'s text-extraction prompt alongside the line items
-and date. Before inserting any line items, ingestion checks whether that
-`order_reference` already exists anywhere in the purchase-event log; if so, the
-entire order is skipped — no line items re-inserted, regardless of source — and
-`"already imported"` is reported rather than silently doing nothing or partially
-processing. This is an exact-match check, not a fuzzy one, and needs no
-reconciliation pass to run: it applies at ingest time, today, for any source
-that exposes an invoice number. Once the order-history API sync exists, this is
-also the primary mechanism for reconciling `receipt_scan` and `order_history_api`
-events for the same order.
+and date. Dedup is per **line**, not per order — a real gap in the original
+order-level design: a genuine multi-page paste of one order (the same
+`order_reference` on each page) would have had its second page's line items
+skipped entirely along with the first page's, since the check fired on the
+reference alone. Before inserting a line, ingestion checks whether that
+specific matched item already has a purchase_event under the same
+`order_reference`; if so, only that line is skipped (reported as
+`already_recorded`, distinct from `matched`), while any other line under the
+same reference — new items on a later page, or everything on a genuine
+full-duplicate re-paste — is still evaluated and recorded normally. A
+full-duplicate re-paste of an already-recorded order still results in zero new
+purchase events, just via every line landing in `already_recorded` rather
+than one blanket "already imported" skip. Shared by both ingest tools via
+`recordOrderLines()` (`staples-host/src/tools/orderLineRecording.ts`) so this
+behavior is defined in exactly one place. Still an exact-match check on
+`order_reference`, not a fuzzy one, and needs no reconciliation pass to run —
+it applies at ingest time, today, for any source that exposes an invoice
+number. Once the order-history API sync exists, this is also the primary
+mechanism for reconciling `receipt_scan` and `order_history_api` events for
+the same order.
 
 **Date-proximity fallback (once order-history API is fixed):** sources with no
 invoice number (in-store receipts, handwritten notes) leave `order_reference`
@@ -323,7 +334,19 @@ guild's channels), never creates either.
   - **Text** relays to `ingest_order_text` (new tool, mirrors
     `ingest_receipt`'s design): discordbot-host passes the raw pasted text
     straight through via the same plain host-side MCP call pattern — no
-    agent parsing it first. Replaces an earlier design where the cold
+    agent parsing it first. Also checks for `.txt` file attachments, not
+    just `message.content` — Discord auto-converts a paste over ~2000
+    characters into a `message.txt` attachment instead of inline content,
+    which is the common case for a real order-confirmation paste, not an
+    edge case; without this, that content would silently never reach
+    `ingest_order_text` at all. Same download pattern already used for
+    image attachments (`fetch` + read the body), matched by content-type
+    (`text/*`) with a `.txt` filename fallback since Discord doesn't
+    always set contentType correctly for plain-text uploads. A message's
+    own inline content and any `.txt` attachment(s) are each relayed as
+    independent `ingest_order_text` calls, each getting its own reply — so
+    a message with both, or multiple attachments, isn't collapsed into one
+    call. Replaces an earlier design where the cold
     session's own agent, guided by prose instructions in discordbot-host's
     workspace `CLAUDE.md`, did the parsing itself before calling
     `record_purchase` per line — that file has been deleted now that the

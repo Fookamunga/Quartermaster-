@@ -79,6 +79,29 @@ async function saveIncomingAttachments(message: Message, channelKey: ChannelKey)
   return saved;
 }
 
+// Discord auto-converts a paste over ~2000 chars into a message.txt
+// attachment instead of message.content -- without this, a genuinely long
+// order-confirmation paste (the common case, not the exception) would
+// silently produce an empty content string and never reach
+// ingest_order_text at all. Matches image attachments' contentType-based
+// filter, with a filename fallback since Discord doesn't always set
+// contentType correctly for plain-text uploads.
+async function readTextAttachments(message: Message): Promise<string[]> {
+  const textFiles = [...message.attachments.values()].filter(
+    (a) => a.contentType?.startsWith("text/") || a.name?.toLowerCase().endsWith(".txt"),
+  );
+  const texts: string[] = [];
+  for (const att of textFiles) {
+    try {
+      const res = await fetch(att.url);
+      texts.push(await res.text());
+    } catch (err) {
+      logger.error("Failed to download text attachment", { err: String(err) });
+    }
+  }
+  return texts;
+}
+
 // #order-import is a pure relay, for both photos and text: everything here
 // calls a staples-host tool directly and relays its structured result back
 // to Discord. No cold session, no agent, no Claude reasoning anywhere in
@@ -89,6 +112,7 @@ async function saveIncomingAttachments(message: Message, channelKey: ChannelKey)
 async function handleOrderImportMessage(
   content: string,
   savedFiles: SavedAttachment[],
+  textAttachments: string[],
   receivedAt: number,
 ): Promise<void> {
   for (const file of savedFiles) {
@@ -102,15 +126,19 @@ async function handleOrderImportMessage(
     }
   }
 
-  if (!content) return;
-
-  try {
-    const result = await ingestOrderText(content);
-    await sendChannelMessage("order-import", formatIngestResult(result));
-    logger.info("Order text ingested", { channelKey: "order-import", elapsedMs: Date.now() - receivedAt });
-  } catch (err) {
-    logger.error("ingest_order_text failed", { channelKey: "order-import", err: String(err) });
-    await sendChannelMessage("order-import", `Couldn't process that order text: ${String(err)}`).catch(() => {});
+  // Each text source (the message's own content, plus any .txt attachment)
+  // is relayed independently -- a message with both, or multiple .txt
+  // attachments, gets one ingest_order_text call and one reply per source.
+  const textSources = [content, ...textAttachments].map((t) => t.trim()).filter((t) => t.length > 0);
+  for (const text of textSources) {
+    try {
+      const result = await ingestOrderText(text);
+      await sendChannelMessage("order-import", formatIngestResult(result));
+      logger.info("Order text ingested", { channelKey: "order-import", elapsedMs: Date.now() - receivedAt });
+    } catch (err) {
+      logger.error("ingest_order_text failed", { channelKey: "order-import", err: String(err) });
+      await sendChannelMessage("order-import", `Couldn't process that order text: ${String(err)}`).catch(() => {});
+    }
   }
 }
 
@@ -122,7 +150,10 @@ async function handleMessage(message: Message): Promise<void> {
 
   const content = (message.content || "").trim();
   const savedFiles = await saveIncomingAttachments(message, channelKey);
-  if (!content && savedFiles.length === 0) return;
+  // Only order-import needs .txt attachments -- woolworths-ordering has no
+  // use for them, so skip the extra fetch there.
+  const textAttachments = channelKey === "order-import" ? await readTextAttachments(message) : [];
+  if (!content && savedFiles.length === 0 && textAttachments.length === 0) return;
 
   const receivedAt = Date.now();
   logger.info("Processing message", { channelKey, channelId: message.channelId });
@@ -131,7 +162,7 @@ async function handleMessage(message: Message): Promise<void> {
   );
 
   if (channelKey === "order-import") {
-    await handleOrderImportMessage(content, savedFiles, receivedAt);
+    await handleOrderImportMessage(content, savedFiles, textAttachments, receivedAt);
     return;
   }
 
