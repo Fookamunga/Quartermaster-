@@ -103,6 +103,16 @@ there — so Tier 2/3 always render as a plain numbered list, nothing marked,
 nothing implied. See the rendering rules after the tiers for exactly how
 each case looks.
 
+**Best-value, unlike the ✅ marker, is shown for all three tiers — a
+deliberate reversal of an earlier decision, not a bug fix.** It was
+originally Tier-1-only, on the reasoning above (no ranked-winner signal to
+justify calling one candidate out). That reasoning still holds for the ✅
+marker, but best-value was never a recommendation claim — it's a factual
+"here's the cheapest option in this variety" statement about one specific
+real product, which stays true regardless of which tier or candidate it's
+anchored on. See each tier's own instructions below for exactly which
+product to anchor it on.
+
 **Tier 1 — purchase history.** Call
 `mcp__staples__suggest_alternatives(item_name: <generic term>)`. It handles
 resolution and ranking internally: purchase-history lookup, re-resolving up
@@ -129,9 +139,10 @@ for the full mechanics; you don't need to reimplement any of it here.
   itself. See CLAUDE.md's staples-host MCP tools section for the full
   mechanics and why this is a best-effort suggestion, not an authoritative
   cheapest-available claim — present it as such, don't state it more
-  confidently than that. Purely additive: this is a Tier-1-only extra,
-  never present from Tier 2/3, and never changes which candidate is the
-  top pick or how the others are numbered.
+  confidently than that. Additive: never changes which candidate is the
+  top pick or how the others are numbered. **Best-value is shown for every
+  tier, not just Tier 1** — see Tier 2/3 below for how to compute it there
+  via `mcp__staples__get_best_value(sku)`.
 
 **Tier 2 — cart-narrowed search.** Call `get_cart` (needed for the
 already-in-cart check regardless) and look for a line whose product name
@@ -142,14 +153,28 @@ that line's name (e.g. "edam cheese", not the full "Mainland Cheese Edam
 bare generic term. If nothing in the cart plausibly matches the request
 either, go to Tier 3. No top pick here — `search_products`' result order is
 the site's own relevance ranking, not a household-specific signal; present
-every result as a plain numbered candidate, none marked.
+every result as a plain numbered candidate, none marked. Call
+`mcp__staples__get_best_value(sku: <the cart line's own sku>)` — anchor it
+on the **cart item itself**, not the narrowed search's own top result: the
+cart item is the one real, known product in this flow (what the household
+actually has), while the narrowed search's top hit is exactly the kind of
+arbitrary relevance-ranking result this tier already treats as untrustworthy
+for a ✅ marker. Anchoring on anything else risks comparing against a
+different product than the one shown as "already in cart."
 
 **Tier 3 — today's broad search (last resort).** Call
 `search_products(query: <generic term>)` unnarrowed, exactly as before. No
 top pick here either, for the same reason — for a bare generic term (e.g.
 "cheese", ~475 matches) the site's own first result is essentially
 arbitrary relevance-ranking, not anything tailored to this household.
-Present every result as a plain numbered candidate.
+Present every result as a plain numbered candidate. Call
+`mcp__staples__get_best_value(sku: <the broad search's own top result's sku>)`
+— there's no cart context here, so the top search result is the only anchor
+available. Its comparison is therefore anchored on as arbitrary a reference
+point as everything else in this tier — that's fine, since best-value was
+never a claim about household preference, just a factual "cheapest in this
+variety" statement that holds regardless of which real product it's
+anchored on.
 
 ## Rendering the candidates
 
@@ -182,8 +207,13 @@ marker:**
 - If any candidate is already in the cart, note it as plain text first:
   `Already in cart: <name> — qty <N>` — not as a numbered choice.
 - List every other candidate as a numbered choice starting at 1. No ✅
-  anywhere, no candidate singled out, no best-value line (that's a Tier-1-
-  only extra — Tier 2/3 never produce one).
+  anywhere, no candidate singled out.
+- If `get_best_value` returned a result for this tier's anchor (see Tier 2/3
+  above for which product to anchor it on), append it as its own line after
+  the numbered list, exactly like Tier 1's: `💰 Best value: <name> —
+  $<price>/<unit>`. Never fabricate a per-unit price yourself. This does
+  **not** imply the anchor (or anything else in the list) is recommended —
+  it's a separate, factual statement, not a marker on any candidate.
 - **Selecting one:** a bare number selects that position in the list. There
   is no "recommended" option to affirm into — every candidate is presented
   with equal weight, so ask which one plainly rather than implying you'd

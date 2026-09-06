@@ -379,6 +379,23 @@ largest same-denomination group as `{name, pricePerUnit}` — omitted
 entirely (never guessed) if the top pick has no parseable `unitPrice`, the
 variety search finds nothing, or nothing survives the exclusion heuristic.
 
+**`get_best_value(sku)`** (`src/tools/getBestValue.ts`) exposes this same
+computation standalone, anchored on any product by SKU rather than only
+`suggest_alternatives`'s own Tier-1 top pick. Built so the
+`#woolworths-ordering` workspace's Tier 2/3 fallback (which never goes
+through `suggest_alternatives` at all — no purchase history to rank against)
+can still show a best-value line, a deliberate reversal of the original
+Tier-1-only scoping (see that workspace's CLAUDE.md). Resolves the given
+`sku` to its full catalogue details via a new `getProductFull()` in
+`wooliesClient.ts` (wraps woolies-mcp's `get_product`) — needed because a
+cart line from `get_cart` carries `unitPrice` but not `brand`, and
+`findBestValue` needs both. Found and fixed live while building this: an
+unresolvable SKU made `get_product` return `isError: true` with a plain-text
+message instead of JSON, which crashed `JSON.parse` instead of degrading to
+"nothing found" — `callWooliesTool` (shared by every woolies-mcp call in
+this file) now checks `isError` before ever trying to parse a response as
+JSON.
+
 ## Fuzzy matching
 
 `get_item`, `record_purchase`, `filter_staples`, `ingest_receipt`,

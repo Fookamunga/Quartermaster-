@@ -4,6 +4,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express from "express";
 import { MCP_AUTH_TOKEN, PORT } from "./config.js";
 import { registerFilterStaples } from "./tools/filterStaples.js";
+import { registerGetBestValue } from "./tools/getBestValue.js";
 import { registerGetItem } from "./tools/getItem.js";
 import { registerIngestOrderText } from "./tools/ingestOrderText.js";
 import { registerIngestReceipt } from "./tools/ingestReceipt.js";
@@ -26,6 +27,7 @@ function buildServer(): McpServer {
   registerIngestOrderText(server);
   registerPushStatusToCraft(server);
   registerSuggestAlternatives(server);
+  registerGetBestValue(server);
   return server;
 }
 

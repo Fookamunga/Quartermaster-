@@ -43,30 +43,50 @@ export class WooliesNotConfiguredError extends Error {
   }
 }
 
-async function callSearchProducts(
-  query: string,
-  page: number,
-): Promise<{ products: Array<Record<string, unknown>>; complete: boolean }> {
+/**
+ * Shared connect/call/close boilerplate for every woolies-mcp tool call this
+ * file makes -- a fresh client + transport per call, not held open (see this
+ * file's header comment). Returns the first text-content block's parsed JSON,
+ * or null if the response carries no usable text block or the tool itself
+ * reported an error.
+ *
+ * `isError` results are treated as null, not thrown -- confirmed live,
+ * get_product reports an unresolvable sku via `isError: true` with a plain
+ * text message ("...returned no product for 99999999...", not JSON), so
+ * blindly JSON.parse-ing whatever's in `content[0]` regardless of `isError`
+ * crashed on that plain text instead of degrading to "nothing found," the
+ * same normal outcome an empty search_products result already gets. A
+ * genuine connection/protocol failure (the client can't reach woolies-mcp at
+ * all) still throws as before -- this only changes how a response the
+ * server successfully sent back, but flagged as an error, gets handled.
+ */
+async function callWooliesTool(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
   if (!WOOLIES_MCP_URL) throw new WooliesNotConfiguredError();
 
   const client = new Client({ name: "staples-host", version: "0.1.0" });
   const transport = new StreamableHTTPClientTransport(new URL(WOOLIES_MCP_URL));
   try {
     await client.connect(transport);
-    const result = await client.callTool({
-      name: "search_products",
-      arguments: { query, page },
-    });
+    const result = await client.callTool({ name, arguments: args });
+    if (result.isError) return null;
     const block = Array.isArray(result.content) ? result.content[0] : undefined;
-    if (!block || block.type !== "text") return { products: [], complete: true };
-    const parsed = JSON.parse(block.text) as {
-      products?: Array<Record<string, unknown>>;
-      complete?: boolean;
-    };
-    return { products: parsed.products ?? [], complete: parsed.complete !== false };
+    if (!block || block.type !== "text") return null;
+    return JSON.parse(block.text) as Record<string, unknown>;
   } finally {
     await client.close().catch(() => {});
   }
+}
+
+async function callSearchProducts(
+  query: string,
+  page: number,
+): Promise<{ products: Array<Record<string, unknown>>; complete: boolean }> {
+  const parsed = await callWooliesTool("search_products", { query, page });
+  const products = Array.isArray(parsed?.products) ? (parsed.products as Array<Record<string, unknown>>) : [];
+  return { products, complete: parsed?.complete !== false };
 }
 
 function toFull(raw: Record<string, unknown>): WooliesProductFull | null {
@@ -91,6 +111,21 @@ export async function searchTopProduct(query: string): Promise<WooliesProduct | 
   const top = await searchTopProductFull(query);
   if (!top) return null;
   return { sku: top.sku, variantKey: top.variantKey, name: top.name, price: top.price };
+}
+
+/**
+ * Fetch one product's full details directly by SKU via woolies-mcp's
+ * get_product tool -- for get_best_value.ts, resolving a Tier 2/3 anchor
+ * (a cart line or a search result, both of which the agent already has a
+ * sku for) to the full shape findBestValue needs (brand, unitPrice). A cart
+ * line from get_cart carries unitPrice but not brand, so this is the only
+ * way to get both for a cart-item anchor without the agent doing its own
+ * extra woolies-mcp call. Returns null if the sku doesn't resolve; throws
+ * only on a genuine connection/protocol failure, same as searchTopProductFull.
+ */
+export async function getProductFull(sku: string): Promise<WooliesProductFull | null> {
+  const parsed = await callWooliesTool("get_product", { sku });
+  return parsed ? toFull(parsed) : null;
 }
 
 // Never retry down to a single word -- too generic to trust as a specific

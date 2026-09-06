@@ -191,6 +191,22 @@ queries. Only staples-host touches this volume.
   `{name, pricePerUnit}`. Omitted entirely (never guessed) if the top pick
   has no parseable `unitPrice`, the variety search finds nothing usable, or
   nothing survives the exclusion heuristic.
+- `get_best_value(sku)` — the same best-value computation above, exposed
+  standalone so it can be anchored on any product, not just
+  `suggest_alternatives`'s own Tier-1 top pick. **Deliberate reversal of an
+  earlier decision, not a bug fix**: best-value was originally scoped to
+  Tier 1 only, on the reasoning that Tier 2/3 have no ranked-winner signal to
+  anchor it on. That's still true, but best-value was never a claim about
+  which candidate the household prefers — it's a factual "here's the
+  cheapest option in this variety" statement, which stays valid regardless
+  of *which* real product it's anchored on. Resolves the given `sku` to its
+  full catalogue details (`brand`, `unitPrice` — the fields a cart line from
+  `get_cart` doesn't carry) via woolies-mcp's `get_product`, then runs the
+  identical `findBestValue()` logic `suggest_alternatives` already uses
+  internally. Returns `{name, pricePerUnit}` or an empty object if nothing
+  computable — same semantics, never a guess. See the `#woolworths-ordering`
+  workspace CLAUDE.md's "Choosing a Product Among Multiple Matches" for which
+  product each tier anchors this on.
 - `filter_staples(ingredients: string[])` — which ingredients aren't already-stocked
 - `ingest_receipt(image)` — vision extraction (line items + order/invoice
   reference number, when present) → order_reference dedup check → fuzzy-match →
