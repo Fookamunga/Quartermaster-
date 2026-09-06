@@ -37,18 +37,6 @@ export const OVERDUE_MULTIPLIER = 1.5;
 // Below this score a match is accepted; above it, treated as "not found".
 export const FUZZY_MATCH_THRESHOLD = 0.4;
 
-// Craft Connect share link + the document ID of the Staples list within it,
-// plus the API token sent as `Authorization: Bearer <token>`. The link path
-// alone isn't sufficient — see README.
-export const CRAFT_CONNECT_URL = process.env.CRAFT_CONNECT_URL ?? null;
-export const CRAFT_STAPLES_DOC_ID = process.env.CRAFT_STAPLES_DOC_ID ?? null;
-export const CRAFT_API_TOKEN = process.env.CRAFT_API_TOKEN ?? null;
-
-// Separate, bot-owned doc that push_status_to_craft() overwrites wholesale.
-// Never read by sync_from_craft() — see README for why that'd be a pull/push
-// loop. Created manually by the user; this server never creates it.
-export const CRAFT_STATUS_DOC_ID = process.env.CRAFT_STATUS_DOC_ID ?? null;
-
 // Used by ingest_receipt (vision) and ingest_order_text (text) for one-shot
 // extraction calls via the Anthropic Messages API — each a single stateless
 // API call, not an Agent SDK session, so neither touches the warm-session

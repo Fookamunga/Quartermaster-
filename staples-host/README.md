@@ -1,12 +1,17 @@
 # staples-host
 
-MCP server owning the grocery staples list, purchase-event log, and Craft sync for
-Quartermaster. See the repo root [CLAUDE.md](../CLAUDE.md) for the full architecture
-and [DEPLOYMENT.md](../DEPLOYMENT.md) for the NAS deploy target.
+MCP server owning the grocery staples list and purchase-event log for
+Quartermaster. Item management is conversational (Discord or Claude
+mobile/desktop) via `add_staple`/`remove_staple`/`update_staple` — no
+external sync, no Craft dependency (removed entirely; see git history for
+the old `sync_from_craft`/`push_status_to_craft` tools if ever needed for
+reference). See the repo root [CLAUDE.md](../CLAUDE.md) for the full
+architecture and [DEPLOYMENT.md](../DEPLOYMENT.md) for the NAS deploy target.
 
-Exposes 9 MCP tools over Streamable HTTP: `list_staples`, `get_item`,
-`record_purchase`, `set_interval`, `sync_from_craft`, `filter_staples`,
-`ingest_receipt`, `ingest_order_text`, `push_status_to_craft`.
+Exposes 11 MCP tools over Streamable HTTP: `list_staples`, `get_item`,
+`record_purchase`, `add_staple`, `remove_staple`, `update_staple`,
+`filter_staples`, `ingest_receipt`, `ingest_order_text`,
+`suggest_alternatives`, `get_best_value`.
 
 ## Running locally
 
@@ -42,10 +47,6 @@ loaded if present). See `.env.example` for the full list with comments:
 | `DATA_DIR` | no (default `./data`) | Where `db.json` lives. Point this at the mounted Docker volume path on the NAS. |
 | `PORT` | no (default `8481`) | HTTP port. `8480` is taken by woolies-mcp on the NAS. |
 | `ALLOWED_HOSTS` | no | Comma-separated hostnames for DNS-rebinding protection. Set to the Tailscale Funnel hostname in production. |
-| `CRAFT_CONNECT_URL` | for `sync_from_craft` | Craft Connect share link, from Craft: Settings → Connect/API. Scopes which documents are visible. |
-| `CRAFT_STAPLES_DOC_ID` | for `sync_from_craft` | Document ID of the Staples list within that share. Find it via `GET ${CRAFT_CONNECT_URL}/documents`. |
-| `CRAFT_API_TOKEN` | for `sync_from_craft`, `push_status_to_craft` | Craft personal API token, sent as `Authorization: Bearer <token>`. The Connect link alone is **not** sufficient — both are needed. This same token covers writes too (confirmed during development — no separate write-scoped token was needed). |
-| `CRAFT_STATUS_DOC_ID` | for `push_status_to_craft` | Document ID of the separate "Staples Status" doc. Must already exist — create it manually in Craft first; this server never creates docs. |
 | `ANTHROPIC_API_KEY` | for `ingest_receipt`, `ingest_order_text` | Used for one-shot Claude extraction (vision for receipts, text for pasted orders) — a single Messages API call per tool call, not an Agent SDK session (see the non-negotiable constraint in CLAUDE.md). A Claude Code OAuth token (`sk-ant-oat01-...`, e.g. from `claude setup-token`) is **not** a substitute — confirmed by testing, it fails with `401 API key is invalid` against the direct Messages API. Needs a real key from console.anthropic.com (`sk-ant-api03-...`). |
 | `EXTRACTION_MODEL` | no (default `claude-sonnet-5`) | Model used for both extraction tools. |
 | `EXTRACTION_MAX_TOKENS` | no (default `4096`) | Output budget for both extraction tools. See "Extraction failure modes" below for why this isn't 1024. |
@@ -87,39 +88,46 @@ reconciliation ever needs real queries (per CLAUDE.md) — not needed yet.
   redeploy. Checked the real production data for anything already affected
   by the old fallback: zero purchase events existed at the time this was
   found, so nothing needed correcting — only future ingests were at risk.
-- New items start `interval_confidence: seeded`, `status: not_due`.
+- New items start `interval_confidence: seeded`, `status: not_due` (whether
+  created via `add_staple` with no `interval_days`, or organically with no
+  interval set at all).
 - Status is only ever evaluated once an item has **2+ purchase events** — below
   that there's no purchase history to anchor a due date against.
 - At **3+ events**, `replenishment_interval_days` is recomputed as the median gap
   between consecutive purchases (outlier-resistant) and `interval_confidence`
-  flips to `learned` — this happens automatically on every `record_purchase`, and
-  overrides any earlier manual `set_interval` value once there's enough real data.
+  flips to `learned` — this happens automatically on every `record_purchase`.
+  **Never** when `interval_confidence` is already `manual`: `recomputeItemSummary`
+  skips the learned-median computation entirely for a manually-set item, no
+  matter how many events accumulate — the manual value stays in force until a
+  human explicitly changes it via `update_staple`. This was a real behavior
+  change: the interval used to be silently overwritten by the learned median
+  once 3+ events existed, which is exactly backwards from "a human's explicit
+  choice should stick."
 - Items with no interval (not enough data yet) never surface as due.
 - `due` vs `overdue` split: `due` once days-since-purchase ≥ interval, `overdue`
   once it's ≥ `1.5×` interval (`OVERDUE_MULTIPLIER` in `src/config.ts`, confirmed
   against CLAUDE.md).
-- **Exception — `set_interval`'s anchor date.** The 2+ event gate above only
+- **Exception — a manually-set anchor date.** The 2+ event gate above only
   applies to the organic, purchase-event-driven path
-  (`recomputeItemSummary`/`computeStatus`). `set_interval(item_name, days,
-  last_purchased?)` computes status straight from (interval, last_purchased) via
-  `computeStatusFromAnchor`, no event count involved:
-  - `last_purchased` given → due/overdue math runs immediately, same as a
-    learned item. `last_purchased_source` becomes `manual_seed`; a real
-    purchase recorded afterward overwrites it as usual.
-  - `last_purchased` omitted and the item has no existing anchor → `status:
-    "due"` right away rather than `not_due`/"not enough data" — a seeded
-    interval with nothing to anchor it shouldn't sit silent.
-  - `last_purchased` omitted but a real anchor already exists (from prior
-    purchase events) → that existing date is used.
+  (`recomputeItemSummary`/`computeStatus`). `add_staple`/`update_staple`
+  compute status straight from (interval, last_purchased) via
+  `computeStatusFromAnchor`, no event count involved — no anchor yet →
+  `status: "due"` right away rather than `not_due`/"not enough data," since a
+  manual interval with nothing to anchor it shouldn't sit silent. **Known,
+  pre-existing discrepancy** (confirmed unchanged from the former
+  `set_interval`'s own behavior, not introduced by this change): `list_staples`/
+  `get_item` still derive status via `computeStatus`'s 2+ event gate, so they
+  report `not_due` for the same item immediately after `add_staple`/
+  `update_staple`'s own response said `due` — see CLAUDE.md's Open items.
 
 **`item.status` is a write-time cache, never trusted as authoritative on
 read.** It's only ever updated by `recomputeItemSummary()`, called after
 `record_purchase`/`ingest_receipt`/`ingest_order_text` — correct for every
-organic code path (`purchase_events` is append-only, no delete tool exists,
-so it can't drift under normal use). But `list_staples`, `get_item`, and
-`push_status_to_craft` all derive status fresh via `computeStatus` at read
-time rather than returning the stored field directly, so a caller is never
-exposed to a stale value regardless of how one might arise — a manual
+organic code path (`purchase_events` is append-only, no delete tool exists
+for events themselves, so it can't drift under normal use). But
+`list_staples` and `get_item` both derive status fresh via `computeStatus` at
+read time rather than returning the stored field directly, so a caller is
+never exposed to a stale value regardless of how one might arise — a manual
 `db.json` edit, a future migration, a bug in some future write path. Found
 live: this project's own test-data cleanup (editing `db.json` directly to
 remove synthetic purchase events, forgetting to also reset `status`) left
@@ -131,62 +139,51 @@ stored field against it on read, so the stale value passed straight
 through. Re-deriving on every read closes that whole class of risk instead
 of just the one instance.
 
-## Craft sync
+## add_staple / remove_staple / update_staple
 
-`sync_from_craft` reads the Staples doc's direct child blocks and treats every
-non-empty one as an item name (the real doc turned out to be plain paragraph
-lines, not an actual bullet-styled list — the parser tolerates both, stripping
-markdown list/emphasis syntax either way). Matching against existing items is
-**exact** (case-insensitive), not fuzzy — Craft is the source of truth for what
-items exist, so a near-miss should create a new item rather than silently merge
-into an existing one.
+Item management is fully conversational now — no Craft, no external sync.
+These three replace what a Craft-synced Staples doc used to provide, plus
+`set_interval` (folded into `update_staple`, see below).
 
-Sync is **add-only**: it never removes or modifies existing items, even ones
-Craft no longer lists. CLAUDE.md's requirement is only that purchase history is
-never dropped; full two-way reconciliation (removing items that vanished from
-Craft) wasn't implemented since it risks discarding data on a false-negative
-parse, and wasn't asked for.
+**`add_staple(name, interval_days?)`** — exact (case-insensitive) name-collision
+check against existing items, matching the intent Craft-sync's own exact-match
+rule had (a near-miss should create a new item, not silently merge into an
+existing one). No `interval_days` → `seeded`, `not_due`, same state a fresh
+item always started in. `interval_days` given → `interval_confidence: manual`
+and status computed immediately via `computeStatusFromAnchor` (see the
+Replenishment logic exception above).
 
-## push_status_to_craft
+**`remove_staple(name)`** — fuzzy-matched, like every other by-name tool.
+Deletes the item only; its `purchase_events` are retained, not deleted,
+orphaned in case the staple is re-added later (a deliberate choice, not an
+oversight — the alternative, deleting history too, was considered and
+rejected). This needs **no extra handling anywhere else** in the codebase:
+verified every reader (`list_staples`, `get_item`, `suggest_alternatives`,
+`record_purchase`, both ingest tools) already looks up the item first and
+only *then* filters `purchase_events` by its `item_id` — an orphaned event
+for a since-deleted item is structurally unreachable through any of them,
+not just untested. Re-adding a staple with the same name gets a fresh
+`item_id` from `add_staple`, so it does not recover the old orphaned history
+automatically (would need a dedicated "restore" tool to do that, not built).
 
-Writes current status to a **separate, bot-owned** "Staples Status" Craft doc
-(never the source doc `sync_from_craft` reads from — that'd create a pull/push
-loop). Wholesale overwrite every call: delete every existing top-level block in
-the doc, then write fresh ones — no diff/merge, since the doc is never meant to
-be hand-edited. Verified idempotent (repeated pushes produce the same block
-count, no accumulation).
+**`update_staple(name, new_name?, interval_days?)`** — replaces
+`set_interval` entirely (removed). Same core mechanism
+(`computeStatusFromAnchor`), same `manual` marking on `interval_days`, plus
+renaming (with its own collision check against every *other* item). Drops
+`set_interval`'s optional `last_purchased` anchor param rather than carrying
+it forward — not asked for in the new tool's signature, and `record_purchase`
+already covers the common case of anchoring a fresh item via a real purchase;
+can be added back if a real need for it turns up.
 
-Items are grouped by urgency (Overdue / Due soon / Stocked / Never tracked /
-Not enough data yet) per CLAUDE.md's exact template, sorted alphabetically
-within each group. Empty groups are omitted entirely rather than shown with no
-items under them — not specified in the brief, chosen for a cleaner
-at-a-glance read (confirmed against CLAUDE.md as the intended behavior).
-
-Grouping logic, in order:
-1. `replenishment_interval_days == null` → **Not enough data yet** (no
-   interval at all, neither seeded nor learned).
-2. Interval set but `last_purchased == null` → **Never tracked** — a
-   `set_interval`-seeded item with no anchor date. `computeStatusFromAnchor`
-   already resolves this to `status: "due"`, but it's kept visually separate
-   from genuinely-computed "Due soon"/"Overdue" items since there's no real
-   purchase date behind it. Line format:
-   `- <item> — no purchase on record yet (usually every ~<interval> days)`.
-3. Otherwise, `item.status` decides Overdue / Due soon / Stocked directly,
-   with the normal line format:
-   `- <item> — last bought <N> days ago (usually every ~<interval> days)`.
-
-See the Replenishment logic section above for how `status` gets set.
-
-**Craft's write API isn't in the public docs** (the docs site is a client-side
-app my fetch tools can't render) — the request/response shapes below were
-reverse-engineered from the live API's Zod validation error messages:
-
-- Create blocks: `POST {CRAFT_CONNECT_URL}/blocks?id=<pageId>` with body
-  `{"blocks": [{"type": "text", "markdown": "..."}], "position": {"position": "end", "pageId": "<pageId>"}}`
-- Delete blocks: `DELETE {CRAFT_CONNECT_URL}/blocks?id=<pageId>` with body
-  `{"blockIds": ["...", "..."]}`
-- The existing read-scoped `CRAFT_API_TOKEN` already covers both — no separate
-  write token or elevated scope was needed when this was tested.
+Verified locally (no network dependency — pure `db.json` logic): `add_staple`
+with/without an interval, duplicate-name rejection, `update_staple` rename +
+interval-manual-marking, rename-collision rejection, `remove_staple` leaving
+history orphaned but harmless to every reader, and the core policy itself —
+a manually-set interval survives 3+ real purchase events completely
+unchanged, confirmed against a real median-interval scenario that would have
+silently overwritten it under the old behavior — alongside a regression
+check that a genuinely `seeded` (never manually touched) item still learns
+normally at 3+ events, unaffected.
 
 ## ingest_receipt
 
@@ -450,8 +447,10 @@ JSON.
 (receipt OCR noise, plurals, chat phrasing) against tracked items via
 `findBestItemMatch` (`src/fuzzy.ts`), four passes in order: exact match,
 forward whole-word substring match, reverse whole-word substring match, then
-Fuse.js fuzzy search as a fallback. `sync_from_craft` deliberately does *not*
-use this — see above.
+Fuse.js fuzzy search as a fallback. `add_staple`/`update_staple` deliberately
+do *not* use this for their own name-collision checks — exact
+(case-insensitive) matching only, so a near-miss creates/renames to a new
+name rather than silently colliding with an existing item.
 
 **The forward whole-word substring pass exists because Fuse alone silently
 failed on real-world data.** Found while verifying `suggest_alternatives`:

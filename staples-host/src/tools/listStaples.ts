@@ -22,8 +22,7 @@ export function registerListStaples(server: McpServer): void {
       // a caller here is never exposed to a stale value regardless of how
       // one might arise (a future bug, a migration, manual data surgery --
       // exactly what caused a real stale "overdue" with a null interval
-      // during this project's own testing). Same defensive principle
-      // push_status_to_craft's groupByUrgency already applies.
+      // during this project's own testing).
       const items = db.items
         .map((item) => {
           const eventCount = db.purchase_events.filter((e) => e.item_id === item.item_id).length;

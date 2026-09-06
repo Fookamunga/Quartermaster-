@@ -78,7 +78,12 @@ Start with JSON; move to SQLite in the same volume if reconciliation needs real
 queries. Only staples-host touches this volume.
 
 **Ownership boundaries:**
-- staples-host owns the full Craft sync end-to-end. Nothing else talks to Craft.
+- staples-host owns its item list and purchase history directly — no
+  external sync, no Craft dependency. Craft integration (`sync_from_craft`,
+  `push_status_to_craft`) has been removed entirely: item management is
+  conversational now, via `add_staple`/`remove_staple`/`update_staple` (see
+  MCP tools below), from Discord or Claude mobile/desktop, not a synced
+  external document.
 - staples-host calls woolies-mcp directly for two narrow, read-only reasons —
   order-history sync (once Adrian's API fix lands) and `suggest_alternatives`'
   product-name resolution (see MCP tools below) — never for anything that
@@ -86,17 +91,19 @@ queries. Only staples-host touches this volume.
   and Claude mobile both talk to staples-host only for the disambiguation
   flow, never to woolies-mcp directly — staples-host is the sole caller of
   `search_products` here, returning fully-resolved results (name, sku, price)
-  back to whichever front end asked. Every other boundary stays exactly as it
-  was: staples-host still owns Craft exclusively, and all cart/order-writing
-  actions remain woolies-mcp's job alone.
+  back to whichever front end asked. All cart/order-writing actions remain
+  woolies-mcp's job alone.
 - The Woolworths auth token never leaves woolies-mcp — staples-host's calls
   into it are plain MCP tool calls like any other caller's, no separate
   credential of its own.
 
 **Data model:**
 - `items`: item_id, name, sku (cached, self-heals via woolies-mcp `search_products`
-  if stale), replenishment_interval_days (null until enough data), interval_confidence
-  (`seeded` | `learned`), status (`not_due` | `due` | `overdue`, default `not_due`)
+  if stale), replenishment_interval_days (null until set or learned), interval_confidence
+  (`seeded` | `learned` | `manual` — `seeded` now means only "no interval at
+  all yet"; `manual` is a human-set interval via `add_staple`/`update_staple`,
+  never silently overwritten by a learned value — see Replenishment logic),
+  status (`not_due` | `due` | `overdue`, default `not_due`)
 - `purchase_events` (append-only): event_id, item_id, date, source (`receipt_scan` |
   `order_history_api`), raw_ref, order_reference (order/invoice number, e.g.
   Woolworths NZ's "Order Confirmation/Invoice Number CD47859895"; null for
@@ -117,10 +124,40 @@ queries. Only staples-host touches this volume.
   `purchase_events`
 
 **MCP tools:**
-- `list_staples()`
+- `list_staples()` — every staple's name, status, last purchase date, and
+  replenishment interval. Covers both "show me my staples" and "show my
+  order interval"/"show my staples update status" — same data, rendered
+  differently by whichever front end asked (a full detailed view vs. a
+  simple name + interval list) — no separate status-query tool needed.
 - `get_item(name)`
 - `record_purchase(item_name, date, source, raw_ref?)` — fuzzy-match, append event,
   update summary
+- `add_staple(name, interval_days?)` — add a new staple to track.
+  `interval_days` optional; if omitted, the item starts with no interval at
+  all (`seeded`, the same "not enough data yet" state a fresh item always
+  started in), eligible to learn one automatically once enough purchase
+  history exists. If given, the interval is marked `manual` and is never
+  silently overwritten by a learned value even once enough history exists
+  to compute one (see Replenishment logic) — change it later via
+  `update_staple`. Fails if a staple with this exact name (case-insensitive)
+  already exists.
+- `remove_staple(name)` — delete a staple entirely. Its `purchase_events` are
+  retained, not deleted — orphaned (no longer attached to any tracked item),
+  in case the staple is re-added later. Needs no special handling elsewhere:
+  every reader (`list_staples`, `get_item`, `suggest_alternatives`,
+  `record_purchase`, ingest tools, ...) looks up the item first and only
+  then filters `purchase_events` by its `item_id`, so an orphaned event for
+  a deleted item is simply never reached by any of them. Re-adding a staple
+  with the same name gets a new `item_id` (via `add_staple`), so it does not
+  recover the old history automatically.
+- `update_staple(name, new_name?, interval_days?)` — rename a staple and/or
+  change its interval. Setting `interval_days` marks it `manual`, same
+  never-silently-overwritten guarantee as `add_staple`'s. Replaces the
+  former `set_interval` tool — same underlying mechanism
+  (`computeStatusFromAnchor`), minus its optional `last_purchased` anchor
+  param, dropped rather than carried forward (`record_purchase` already
+  covers anchoring a fresh item via a real purchase; can be added back if a
+  real need for it shows up).
 - `suggest_alternatives(item_name)` — the ranking engine behind
   `#woolworths-ordering`'s disambiguation flow (Tier 1 of the three-tier flow
   in that channel's workspace CLAUDE.md; see "Choosing a Product Among
@@ -264,49 +301,6 @@ queries. Only staples-host touches this volume.
   order_reference dedup check → fuzzy-match → record per line, return
   matched/unmatched. Built to close discordbot-host's `#order-import`
   text-parsing gap — see that section for detail.
-- `set_interval(item_name, days)` — manual override
-- `sync_from_craft()` — pull Staples list from Craft; add new items, never drop
-  items with purchase history
-- `push_status_to_craft()` — write current status (name, due/overdue/not_due,
-  last_purchased, interval) to a **separate, bot-owned Craft doc named "Staples
-  Status"** — created manually by the user first (Craft's write API likely needs
-  an existing doc ID/target, not create-and-write in one call), used purely for
-  visual reference. Not the source Staples doc `sync_from_craft()` reads from —
-  this avoids a pull/push loop: `sync_from_craft()` never reads this doc, and it
-  can be safely overwritten wholesale on every push (no diff/merge against user
-  edits needed, since the user isn't expected to hand-edit it).
-
-  **Format** — grouped by urgency, not alphabetical, with a last-updated
-  timestamp and each item showing its current interval ("usually every ~X days")
-  alongside days since last purchase:
-  ```
-  Quartermaster — Staples Status
-  Last updated: <timestamp>
-
-  ⚠️ Overdue
-  - <item> — last bought <N> days ago (usually every ~<interval> days)
-
-  🟡 Due soon
-  - <item> — last bought <N> days ago (usually every ~<interval> days)
-
-  ✅ Stocked
-  - <item> — last bought <N> days ago (usually every ~<interval> days)
-
-  ❔ Never tracked
-  - <item> — no purchase on record yet (usually every ~<interval> days)
-
-  ❔ Not enough data yet
-  - <item> — no interval learned yet
-  ```
-  Items seeded via `set_interval` with no `last_purchased` anchor (`status: due`
-  but no real date to compute from) get their own **"❔ Never tracked"** section —
-  kept visually separate from genuinely-computed "Due soon"/"Overdue" items, not
-  folded into either. Distinct from **"❔ Not enough data yet"**, which is for items
-  with no interval at all (neither seeded nor learned).
-
-  Confirm Craft's write API/token scope before implementing — the existing
-  `CRAFT_API_TOKEN` may need broader permissions than the read-only pull required.
-
 **Replenishment logic:** new items start `seeded`, `status = not_due` until ≥2
 purchase events exist. At ≥3 events, interval = median gap between purchases
 (outlier-resistant), confidence → `learned`. No-interval items never surface as due.
@@ -316,6 +310,29 @@ once `days_since_last_purchased >= interval`; `overdue` once
 was introduced during the build as a tunable constant (not specified in this brief)
 — confirm its actual configured value, since it controls how much slack an item
 gets before escalating from a soft "due" nudge to an "overdue" alert.
+
+**Manual intervals are never silently overwritten.** Once `add_staple`/
+`update_staple` sets an interval (`interval_confidence: "manual"`),
+`recomputeItemSummary()` skips the learned-median computation entirely for
+that item, even once ≥3 purchase events exist — the manual value stays in
+force until a human explicitly changes it via `update_staple` again. This is
+a distinct concept from the organic `seeded` → `learned` path above (which
+still applies unchanged to any item that was never manually set) — `seeded`
+now means only "no interval at all yet," not "possibly manually seeded,"
+the two having previously been conflated under one value.
+
+Note for later, out of scope for the Craft-removal/conversational-management
+work that introduced this policy: a discrepancy alert — if the learned value
+disagrees meaningfully with a manual setting (e.g. real usage suggests
+running out earlier than the manual interval assumes) — should eventually
+surface as a nudge rather than staying silent. Building this would mean
+computing the learned median for manual items too (currently skipped
+entirely, not just computed-and-unapplied) and storing it separately for
+comparison, without ever overwriting the manual value. Not built now, just
+flagged here so it isn't lost. Separately — and also not part of this work —
+the interval/replenishment calculation itself (currently date-only, ignoring
+purchase quantity) is being redesigned as its own task; this policy sits on
+top of whatever that calculation produces, not part of it.
 
 **Order-reference dedup (primary, live now):** every purchase event carries an
 `order_reference` — the order/invoice number (e.g. Woolworths NZ's "Order
@@ -495,10 +512,11 @@ guild's channels), never creates either.
   corrupt the replenishment-interval data).
 - **"Never tracked" item alerting.** Now buildable — staples-host is real.
   Mechanism: a periodic (every 6h) direct host-side call to staples-host's
-  `list_staples()`, filtered to items with an interval set (seeded or
-  learned) **and** no `last_purchased` anchor — exactly the "❔ Never tracked"
-  category from the Craft doc, never "❔ Not enough data yet" (no interval at
-  all, neither seeded nor learned). The filter checks
+  `list_staples()`, filtered to items with an interval set (`learned` or
+  `manual` confidence) **and** no `last_purchased` anchor — the "Never
+  tracked" category (formerly a section in the now-removed Craft status
+  doc), never "not enough data yet" (no interval at all — `seeded`
+  confidence, which now means specifically that). The filter checks
   `replenishment_interval_days != null` explicitly rather than trusting
   `status: "due"` alone to imply it — a defensive check against the
   no-interval/no-alert guarantee silently breaking if `status`'s derivation
@@ -557,3 +575,14 @@ time budget.
 - Exact reconciliation window/logic once both purchase-event sources exist for real
 - Whether any host-side actions currently done via the old IPC tools genuinely need
   Claude in the loop, or can just be discordbot-host functions
+- **Pre-existing status-derivation discrepancy, found while building
+  add_staple/update_staple (not introduced by them — confirmed the former
+  `set_interval` had the identical behavior already):** a manually-anchored
+  item with no real purchase history yet reports `status: "due"` from
+  `add_staple`/`update_staple`'s own response (via `computeStatusFromAnchor`,
+  which has no purchase-count gate) but `status: "not_due"` from
+  `list_staples`/`get_item` immediately after (via `computeStatus`, which
+  requires ≥2 purchase events before trusting any anchor). Left as-is,
+  per this task's explicit scope boundary against touching the interval/
+  status-calculation logic — worth resolving whenever that logic is next
+  touched (e.g. the separately-planned replenishment-calculation redesign).

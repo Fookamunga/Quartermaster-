@@ -32,9 +32,9 @@ export function medianIntervalDays(sortedDates: string[]): number | null {
 /**
  * Pure due/overdue math from an interval + anchor date, no event count
  * involved. No interval -> never due. Interval set but no anchor date at
- * all -> due immediately (a seeded item with nothing to anchor it should
- * surface, not sit silent as "not enough data" — see CLAUDE.md's
- * set_interval exception). Otherwise the normal threshold math.
+ * all -> due immediately (a manually-seeded item with nothing to anchor it
+ * should surface, not sit silent as "not enough data" — see CLAUDE.md's
+ * add_staple/update_staple exception). Otherwise the normal threshold math.
  */
 export function computeStatusFromAnchor(
   intervalDays: number | null,
@@ -54,8 +54,8 @@ export function computeStatusFromAnchor(
  * events — below that there's no purchase history to anchor a due date
  * against, so it always reads not_due. This gate applies only to the
  * organic, purchase-event-driven path (recomputeItemSummary below);
- * set_interval's manually-seeded anchor bypasses it entirely and calls
- * computeStatusFromAnchor directly — see CLAUDE.md.
+ * add_staple/update_staple's manually-seeded anchor bypasses it entirely
+ * and calls computeStatusFromAnchor directly — see CLAUDE.md.
  */
 export function computeStatus(
   item: Pick<Item, "replenishment_interval_days" | "last_purchased">,
@@ -90,6 +90,13 @@ export function todayIso(): string {
 /**
  * Recompute an item's denormalized purchase summary + learned interval from
  * its full purchase-event history. Called after every record_purchase.
+ *
+ * Never overwrites a manually-set interval (interval_confidence: "manual",
+ * set by add_staple/update_staple): a human's explicit choice stays in force
+ * until they explicitly change it, even once enough purchase history exists
+ * to compute a learned value -- see CLAUDE.md's Replenishment logic. This is
+ * a separate concept from "seeded", which now means only "no interval at
+ * all yet" (a brand-new item with nothing set).
  */
 export function recomputeItemSummary(
   item: Item,
@@ -98,16 +105,24 @@ export function recomputeItemSummary(
   if (eventsForItem.length === 0) {
     item.last_purchased = null;
     item.last_purchased_source = null;
-    // Genuinely no purchase history means no basis for a learned interval
-    // either -- unreachable in normal operation (events are append-only, so
-    // a previously-non-zero count never drops back to zero on its own) until
-    // an admin-driven correction removes a bad event and calls this again;
-    // without this, a stale replenishment_interval_days/interval_confidence
-    // from before the removal would survive, misrepresenting an item with
-    // zero real purchases as having a learned pattern.
-    item.replenishment_interval_days = null;
-    item.interval_confidence = "seeded";
-    item.status = "not_due";
+    if (item.interval_confidence === "manual") {
+      // A manual interval has no dependency on purchase history at all --
+      // losing every event (e.g. an admin data correction) shouldn't undo
+      // an explicit human choice, only recompute status against it fresh.
+      item.status = computeStatusFromAnchor(item.replenishment_interval_days, null);
+    } else {
+      // Genuinely no purchase history means no basis for a learned interval
+      // either -- unreachable in normal operation (events are append-only,
+      // so a previously-non-zero count never drops back to zero on its own)
+      // until an admin-driven correction removes a bad event and calls this
+      // again; without this, a stale replenishment_interval_days/
+      // interval_confidence from before the removal would survive,
+      // misrepresenting an item with zero real purchases as having a
+      // learned pattern.
+      item.replenishment_interval_days = null;
+      item.interval_confidence = "seeded";
+      item.status = "not_due";
+    }
     return;
   }
 
@@ -118,7 +133,7 @@ export function recomputeItemSummary(
   item.last_purchased = latest.date;
   item.last_purchased_source = latest.source;
 
-  if (sorted.length >= 3) {
+  if (sorted.length >= 3 && item.interval_confidence !== "manual") {
     const learned = medianIntervalDays(sorted.map((e) => e.date));
     if (learned != null) {
       item.replenishment_interval_days = learned;

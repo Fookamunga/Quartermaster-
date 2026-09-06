@@ -1,10 +1,17 @@
 export type PurchaseSource = "receipt_scan" | "order_history_api";
 // last_purchased_source can also be "manual_seed" -- set directly by
-// set_interval's optional last_purchased param, with no backing
+// update_staple's optional last_purchased param, with no backing
 // purchase_event. Kept distinct from PurchaseSource (which types actual
 // purchase_events.source) since a manual seed is never a real event.
 export type LastPurchasedSource = PurchaseSource | "manual_seed";
-export type IntervalConfidence = "seeded" | "learned";
+// "seeded": no interval at all yet (a brand-new item, or one add_staple
+// created without an interval) -- eligible to become "learned" once enough
+// purchase history exists. "learned": computed from real purchase history
+// (median gap, >=3 events). "manual": explicitly set via add_staple's
+// interval_days or update_staple -- never silently overwritten by a learned
+// value, even once enough history exists to compute one; stays in force
+// until explicitly changed. See CLAUDE.md's Replenishment logic.
+export type IntervalConfidence = "seeded" | "learned" | "manual";
 export type ItemStatus = "not_due" | "due" | "overdue";
 
 export interface Item {

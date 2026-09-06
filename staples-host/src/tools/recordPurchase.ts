@@ -14,7 +14,7 @@ export function registerRecordPurchase(server: McpServer): void {
         "Fuzzy-match item_name against the staples list, append a purchase " +
         "event, and update the item's last-purchased summary and " +
         "replenishment status. Fails if no matching item exists — items are " +
-        "added via sync_from_craft, not created here.",
+        "added via add_staple, not created here.",
       inputSchema: {
         item_name: z.string().min(1),
         date: isoDate.describe("Purchase date, YYYY-MM-DD"),
