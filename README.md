@@ -23,6 +23,12 @@ way.*
   a Discord-based way to talk to the same two servers. Nothing else in the
   system depends on it.
 
+Each component you deploy needs its own `.env` file with real secrets (API
+keys, tokens, the Discord webhook URL) before it'll run — see
+[`staples-host/.env.example`](staples-host/.env.example) and
+[`discordbot-host/.env.example`](discordbot-host/.env.example) for the
+authoritative list of what each one needs.
+
 ## Managing staples
 
 Fully conversational, no external doc or sync required — just talk to either
