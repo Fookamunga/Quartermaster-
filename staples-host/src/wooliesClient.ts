@@ -36,6 +36,13 @@ export interface WooliesProductFull {
   unitPrice: string | null;
 }
 
+export interface CartLine {
+  sku: string;
+  variantKey: string;
+  name: string;
+  quantity: number;
+}
+
 export class WooliesNotConfiguredError extends Error {
   constructor() {
     super("WOOLIES_MCP_URL is not set -- suggest_alternatives cannot resolve anything.");
@@ -197,6 +204,50 @@ export async function searchTopProductFull(query: string): Promise<WooliesProduc
     if (top) return top;
   }
   return null;
+}
+
+/**
+ * The first page of a plain, unnarrowed search_products call -- used by
+ * build_shopping_list's Tier 2 (a cart line's own narrowed query) and Tier 3
+ * (the bare generic term) for their numbered-list display, both of which
+ * only ever need the site's own first-page relevance order, not full
+ * pagination (that's searchAllPages/searchVariety's job, used only for
+ * best-value's own broader comparison). Throws only on a genuine
+ * connection/protocol failure; an empty result set is a normal outcome.
+ */
+export async function searchFirstPage(query: string): Promise<WooliesProductFull[]> {
+  const { products } = await callSearchProducts(query, 1);
+  const full: WooliesProductFull[] = [];
+  for (const raw of products) {
+    const p = toFull(raw);
+    if (p) full.push(p);
+  }
+  return full;
+}
+
+/**
+ * List the current cart's lines -- used by build_shopping_list's Tier 2 to
+ * find a plausible already-in-cart line for an ingredient with no purchase
+ * history, the same read-only pattern as this file's other calls (no cart
+ * writes, no auth token of its own). Throws only on a genuine
+ * connection/protocol failure; an empty cart is a normal result (get_cart
+ * proves the session first, so it's never a silently-expired-session
+ * artifact -- see the real tool's own description).
+ */
+export async function getCart(): Promise<CartLine[]> {
+  const parsed = await callWooliesTool("get_cart", {});
+  const rawLines = Array.isArray(parsed?.lines) ? (parsed.lines as Array<Record<string, unknown>>) : [];
+  const lines: CartLine[] = [];
+  for (const raw of rawLines) {
+    if (typeof raw.sku !== "string" || typeof raw.name !== "string") continue;
+    lines.push({
+      sku: raw.sku,
+      variantKey: typeof raw.variantKey === "string" ? raw.variantKey : raw.sku,
+      name: raw.name,
+      quantity: typeof raw.quantity === "number" ? raw.quantity : 1,
+    });
+  }
+  return lines;
 }
 
 // Safety cap on pages followed, independent of the real-world 1-2 pages a

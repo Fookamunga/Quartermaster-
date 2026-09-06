@@ -57,6 +57,21 @@ function isFlavorPairingOrCompound(before: string | null, after: string | null):
 }
 
 /**
+ * Does `itemName` appear as a complete word (or word sequence) inside
+ * `query`, and -- if so -- is it a genuine mention rather than an incidental
+ * flavor/descriptor one (see COMPOUND_MODIFIER_WORDS)? Factored out of
+ * findWholeWordSubstringMatch so build_shopping_list's Tier 2 can reuse the
+ * exact same check against a live cart-line name, not just tracked
+ * `Item[]` -- e.g. does the ingredient "cheese" plausibly appear in a real
+ * cart line like "Mainland Cheese Edam 500g"?
+ */
+export function matchesWholeWord(itemName: string, query: string): boolean {
+  const neighbors = neighborWords(query, itemName);
+  if (!neighbors) return false;
+  return !isFlavorPairingOrCompound(neighbors.before, neighbors.after);
+}
+
+/**
  * Whole-word substring match: does this item's name appear as a complete
  * word (or word sequence) inside the query? This is the direction Fuse's
  * length-normalized edit-distance score handles badly by default: a long
@@ -73,11 +88,7 @@ function isFlavorPairingOrCompound(before: string | null, after: string | null):
  * COMPOUND_MODIFIER_WORDS.
  */
 function findWholeWordSubstringMatch(items: Item[], query: string): Item | null {
-  const matches = items.filter((item) => {
-    const neighbors = neighborWords(query, item.name);
-    if (!neighbors) return false;
-    return !isFlavorPairingOrCompound(neighbors.before, neighbors.after);
-  });
+  const matches = items.filter((item) => matchesWholeWord(item.name, query));
   if (matches.length === 0) return null;
   // More than one staple's name can appear in the query (e.g. both "Milk"
   // and "Oat Milk" as tracked staples, against a line mentioning oat milk)
@@ -148,11 +159,45 @@ export function findBestItemMatch(
   const reverseWholeWord = findWholeWordSubstringMatchReverse(items, query);
   if (reverseWholeWord) return reverseWholeWord;
 
-  const fuse = new Fuse(items, {
-    keys: ["name"],
-    includeScore: true,
-    threshold: FUZZY_MATCH_THRESHOLD,
-  });
+  return findFuzzyFallbackMatch(items, query);
+}
+
+// How short a query can be, relative to the matched item's own name length,
+// before its Fuse score is trusted -- confirmed live: "lime" (4 chars)
+// scored 0.386 against the real staple "Olive oil" (9 chars, ratio 0.44),
+// under FUZZY_MATCH_THRESHOLD yet a wrong match; "spagetti" (8 chars, a
+// realistic typo) against "Spaghetti pasta" (15 chars, ratio 0.53) is a
+// genuine correction worth keeping. 0.5 cleanly separates the two in every
+// case tested against the real staples list -- like COMPOUND_MODIFIER_WORDS,
+// this is an evidence-based cutoff, not a fixed law; revisit if real data
+// argues otherwise.
+const MIN_QUERY_TO_NAME_LENGTH_RATIO = 0.5;
+
+/**
+ * Fuse's edit-distance fallback for near-matches/typos with no clean
+ * substring relationship in either direction (see findBestItemMatch).
+ *
+ * Does NOT rely on Fuse's own `threshold` option to gate results -- confirmed
+ * live that it doesn't reliably do so: searching the real 13-item staples
+ * list for "otiss" returns "Otis oat milk the everyday one" at score 0.519
+ * and "sos" returns "Soy sauce" at 0.46, both returned even though both
+ * scores exceed a configured threshold of 0.4. Fuse is called here with a
+ * permissive threshold instead (so it always reports its true best score),
+ * and this function applies its own two checks explicitly: the score must
+ * still clear FUZZY_MATCH_THRESHOLD, and the query must be at least
+ * MIN_QUERY_TO_NAME_LENGTH_RATIO of the matched name's length -- a short
+ * query fuzzy-matching a much longer, mostly-unrelated name (e.g. "lime"
+ * against "Olive oil") is exactly the shape of false positive neither the
+ * threshold alone nor Fuse's internal gating catches.
+ */
+function findFuzzyFallbackMatch(items: Item[], query: string): Item | null {
+  const fuse = new Fuse(items, { keys: ["name"], includeScore: true, threshold: 1 });
   const [best] = fuse.search(query);
-  return best ? best.item : null;
+  if (!best || best.score == null) return null;
+  if (best.score > FUZZY_MATCH_THRESHOLD) return null;
+
+  const ratio = query.trim().length / best.item.name.length;
+  if (ratio < MIN_QUERY_TO_NAME_LENGTH_RATIO) return null;
+
+  return best.item;
 }

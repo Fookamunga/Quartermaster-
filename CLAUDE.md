@@ -84,15 +84,17 @@ queries. Only staples-host touches this volume.
   conversational now, via `add_staple`/`remove_staple`/`update_staple` (see
   MCP tools below), from Discord or Claude mobile/desktop, not a synced
   external document.
-- staples-host calls woolies-mcp directly for two narrow, read-only reasons —
-  order-history sync (once Adrian's API fix lands) and `suggest_alternatives`'
-  product-name resolution (see MCP tools below) — never for anything that
-  writes to the cart or places an order. Confirmed by diagram: discordbot-host
-  and Claude mobile both talk to staples-host only for the disambiguation
-  flow, never to woolies-mcp directly — staples-host is the sole caller of
-  `search_products` here, returning fully-resolved results (name, sku, price)
-  back to whichever front end asked. All cart/order-writing actions remain
-  woolies-mcp's job alone.
+- staples-host calls woolies-mcp directly for narrow, read-only reasons —
+  order-history sync (once Adrian's API fix lands), `suggest_alternatives`'
+  product-name resolution, and `build_shopping_list`'s Tier 2/3 fallback
+  (`get_cart`, `search_products`) when an ingredient has no purchase-history
+  top pick (see MCP tools below) — never for anything that writes to the cart
+  or places an order. Confirmed by diagram: discordbot-host and Claude mobile
+  both talk to staples-host only for the disambiguation flow, never to
+  woolies-mcp directly — staples-host is the sole caller of `search_products`
+  (and, as of `build_shopping_list`, `get_cart`) here, returning
+  fully-resolved results (name, sku, price) back to whichever front end
+  asked. All cart/order-writing actions remain woolies-mcp's job alone.
 - The Woolworths auth token never leaves woolies-mcp — staples-host's calls
   into it are plain MCP tool calls like any other caller's, no separate
   credential of its own.
@@ -306,6 +308,26 @@ queries. Only staples-host touches this volume.
   workspace CLAUDE.md's "Choosing a Product Among Multiple Matches" for which
   product each tier anchors this on.
 - `filter_staples(ingredients: string[])` — which ingredients aren't already-stocked
+- `build_shopping_list(ingredients: string[])` — resolves an entire
+  multi-ingredient list (e.g. a recipe) in one call, replacing the pattern of
+  calling `filter_staples` then `suggest_alternatives` per item yourself.
+  Splits already-stocked vs needed via the same logic `filter_staples` uses
+  (shared, so the two can't disagree), then per needed ingredient runs the
+  same three-tier fallback as the single-item disambiguation flow — purchase
+  history (`rankAlternatives`, unchanged), then a cart-narrowed search (its
+  own `get_cart` call, matching a plausible line by whole word, narrowing via
+  the same `deriveVarietyQuery` best-value already uses), then a broad
+  search — capped at 3 alternatives per ingredient, numbered **sequentially
+  across the entire response**, not restarted per ingredient, so a flat reply
+  like "1 4 6" unambiguously identifies one specific item regardless of how
+  many ingredients are in the list. Also returns each ingredient's untrimmed
+  alternative set (up to 5) for re-prompting an ingredient the reply didn't
+  address — see the tool's own description for the exact reply-interpretation
+  contract (which numbers mean what, and the never-auto-select rule), kept
+  there rather than duplicated here since that's what reaches Claude
+  mobile/desktop identically to Discord, unlike this file. Read-only, same
+  as `suggest_alternatives`. See the `#woolworths-ordering` workspace
+  CLAUDE.md for when to call this instead of the single-item flow.
 - `ingest_receipt(image)` — vision extraction (line items + quantity per line +
   order/invoice reference number, when present) → order_reference dedup check →
   fuzzy-match → record per line, return unmatched lines. See "Order-reference

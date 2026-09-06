@@ -242,16 +242,31 @@ short-circuit at any tier: if Tier 1 or Tier 2 already narrows to one obvious
 product, there's no need to fall through further or to ask the user to
 confirm it.
 
-## Staples Filtering
+## Recipe / Multi-Ingredient Shopping Lists
 
-When a request is for the items needed for a recipe, call
-`mcp__staples__filter_staples` with the ingredient list before building the
-cart — it tells you which ingredients are already stocked (and shouldn't be
-added by default) versus genuinely needed. Do **not** add matched staple
-items to the cart by default. In the list you return to the requester, still
-show staple items but suffixed with "Staple - not ordered by default" instead
-of a cart line. If the requester explicitly asks to order a staple anyway,
-add it normally for that request.
+When a request is for the items needed for a recipe (or any list of several
+ingredients at once), call `mcp__staples__build_shopping_list` with the full
+ingredient list — do **not** call `filter_staples` and then run the
+single-item "Choosing a Product Among Multiple Matches" flow yourself per
+ingredient; `build_shopping_list` already does both, and assigns numbering
+that's globally unique across the whole reply (required so a flat numeric
+reply like "1 4 6" can unambiguously pick one option per ingredient — the
+single-item flow's own per-request numbering doesn't compose across several
+ingredients shown in one message). See CLAUDE.md's MCP tools section and the
+tool's own description for the full response shape and — critically — the
+exact rule for interpreting a reply and for re-prompting an ingredient it
+didn't address; that rule lives only in the tool description (it reaches
+Claude mobile/desktop identically), so don't restate or improvise a different
+version of it here.
+
+Already-stocked ingredients: still show them in the list you return, suffixed
+with "Staple - not ordered by default" instead of a cart line, same as
+before. If the requester explicitly asks to order a staple anyway, add it
+normally for that request.
+
+The single-item "Choosing a Product Among Multiple Matches" flow above is
+unaffected by any of this — it's still exactly how a single generic request
+("add cheese") gets resolved, with its own 5-candidate cap and ✅ marker.
 
 ## Discord Formatting
 
