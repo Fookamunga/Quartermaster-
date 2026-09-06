@@ -153,7 +153,9 @@ that line's name (e.g. "edam cheese", not the full "Mainland Cheese Edam
 bare generic term. If nothing in the cart plausibly matches the request
 either, go to Tier 3. No top pick here — `search_products`' result order is
 the site's own relevance ranking, not a household-specific signal; present
-every result as a plain numbered candidate, none marked. Call
+the first 5 results as a plain numbered list, none marked, in the order
+`search_products` returned them — same cap as Tier 1's own top 5, no new
+ranking logic, just truncate. Call
 `mcp__staples__get_best_value(sku: <the cart line's own sku>)` — anchor it
 on the **cart item itself**, not the narrowed search's own top result: the
 cart item is the one real, known product in this flow (what the household
@@ -167,7 +169,8 @@ different product than the one shown as "already in cart."
 top pick here either, for the same reason — for a bare generic term (e.g.
 "cheese", ~475 matches) the site's own first result is essentially
 arbitrary relevance-ranking, not anything tailored to this household.
-Present every result as a plain numbered candidate. Call
+Present the first 5 results as a plain numbered list, same cap and same
+reasoning as Tier 2's. Call
 `mcp__staples__get_best_value(sku: <the broad search's own top result's sku>)`
 — there's no cart context here, so the top search result is the only anchor
 available. Its comparison is therefore anchored on as arbitrary a reference
@@ -206,8 +209,12 @@ produced a `top_pick`:
 marker:**
 - If any candidate is already in the cart, note it as plain text first:
   `Already in cart: <name> — qty <N>` — not as a numbered choice.
-- List every other candidate as a numbered choice starting at 1. No ✅
-  anywhere, no candidate singled out.
+- List up to 5 candidates as a numbered choice starting at 1, in the order
+  `search_products` returned them (its own relevance ranking) — truncate to
+  the first 5, don't re-rank or cherry-pick. Same cap as Tier 1's own top 5;
+  Tier 2/3 previously had no cap at all and could render the full,
+  unfiltered result count (confirmed live: a cart-narrowed "edam cheese"
+  search returned 21). No ✅ anywhere, no candidate singled out.
 - If `get_best_value` returned a result for this tier's anchor (see Tier 2/3
   above for which product to anchor it on), append it as its own line after
   the numbered list, exactly like Tier 1's: `💰 Best value: <name> —
