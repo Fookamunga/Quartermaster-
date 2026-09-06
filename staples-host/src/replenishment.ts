@@ -98,6 +98,15 @@ export function recomputeItemSummary(
   if (eventsForItem.length === 0) {
     item.last_purchased = null;
     item.last_purchased_source = null;
+    // Genuinely no purchase history means no basis for a learned interval
+    // either -- unreachable in normal operation (events are append-only, so
+    // a previously-non-zero count never drops back to zero on its own) until
+    // an admin-driven correction removes a bad event and calls this again;
+    // without this, a stale replenishment_interval_days/interval_confidence
+    // from before the removal would survive, misrepresenting an item with
+    // zero real purchases as having a learned pattern.
+    item.replenishment_interval_days = null;
+    item.interval_confidence = "seeded";
     item.status = "not_due";
     return;
   }
