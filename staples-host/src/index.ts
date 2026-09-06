@@ -5,6 +5,7 @@ import express from "express";
 import { MCP_AUTH_TOKEN, PORT } from "./config.js";
 import { registerAddStaple } from "./tools/addStaple.js";
 import { registerBuildShoppingList } from "./tools/buildShoppingList.js";
+import { registerCheckRestockNeeded } from "./tools/checkRestockNeeded.js";
 import { registerFilterStaples } from "./tools/filterStaples.js";
 import { registerGetBestValue } from "./tools/getBestValue.js";
 import { registerGetItem } from "./tools/getItem.js";
@@ -31,6 +32,7 @@ function buildServer(): McpServer {
   registerSuggestAlternatives(server);
   registerGetBestValue(server);
   registerBuildShoppingList(server);
+  registerCheckRestockNeeded(server);
   return server;
 }
 

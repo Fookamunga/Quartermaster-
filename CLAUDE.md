@@ -328,6 +328,17 @@ queries. Only staples-host touches this volume.
   mobile/desktop identically to Discord, unlike this file. Read-only, same
   as `suggest_alternatives`. See the `#woolworths-ordering` workspace
   CLAUDE.md for when to call this instead of the single-item flow.
+- `check_restock_needed()` — on-demand version of the weekly restock report
+  below: which staples are due, overdue, or projected to run out within 7
+  days, right now. Calls the exact same `itemsRunningOutSoon()` calculation
+  the scheduled Sunday webhook post uses (see below) — not a separate
+  approximation, so this always agrees with what that report would say if it
+  ran this instant. Returns `items` (sorted most-urgent first, each with
+  `days_until_due` and `restock_rate_days`), not pre-formatted text — an
+  agent is always in the loop for this tool (unlike the webhook path), so
+  phrasing is left to the caller, same as every other staples-host tool. Its
+  own description tells the caller to phrase this as a direct answer to a
+  direct question, not the weekly report's "📅 Weekly restock check" framing.
 - `ingest_receipt(image)` — vision extraction (line items + quantity per line +
   order/invoice reference number, when present) → order_reference dedup check →
   fuzzy-match → record per line, return unmatched lines. See "Order-reference
@@ -454,7 +465,9 @@ This is a deliberate architectural departure from the auth-failure/
 never-tracked sentries above (both live in discordbot-host and call
 staples-host's tools) — this job is staples-host's own, since it needs no
 conversational/agent involvement at all, just a scheduled read of its own
-data plus one HTTP POST.
+data plus one HTTP POST. The `check_restock_needed()` MCP tool (see above)
+is the on-demand counterpart — same calculation, called directly instead of
+waiting for Sunday.
 
 - **Calculation:** reuses `effectiveIntervalDays`/`computeStatus` exactly as
   `list_staples`/`get_item` do — no new status concept. For each item with a
