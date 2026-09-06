@@ -93,15 +93,75 @@ export async function searchTopProduct(query: string): Promise<WooliesProduct | 
   return { sku: top.sku, variantKey: top.variantKey, name: top.name, price: top.price };
 }
 
+// Never retry down to a single word -- too generic to trust as a specific
+// product lookup (the whole point of this retry is finding the SAME
+// product, not a plausible-looking different one).
+const MIN_QUERY_WORDS = 2;
+
+// Bounds worst-case latency, not match quality: alternatives.ts's
+// rankAlternatives() resolves up to 10 historical events through this
+// function *sequentially* (a deliberate existing choice -- no concurrent
+// connections to a shared external dependency), and a name that never
+// resolves at all is exactly the case that would otherwise cost the MOST
+// retries. Uncapped, that risks turning one suggest_alternatives call into
+// enough sequential HTTP round-trips to blow past the warm session's 40s
+// per-tool-call timeout -- trading a clean "nothing found" for a hard
+// timeout, a worse outcome. 2 extra attempts comfortably covers the real
+// case this was built for (one trailing noise word) with room to spare,
+// while keeping the pathological "genuinely unresolvable" case bounded.
+const MAX_TRIM_ATTEMPTS = 2;
+
 /**
  * Same as searchTopProduct, but returns the full shape (brand, unitPrice
  * included) -- used by best-value, which needs both to derive the variety
  * query and compare $/unit; Tier-1 ranking never needs either, so it stays
  * on the narrower searchTopProduct.
+ *
+ * Retries with the query trimmed one word at a time from the end if the
+ * full phrase comes back empty. Needed because the only real caller of this
+ * against free text -- rankAlternatives(), resolving a historical
+ * purchase_event's product_name -- is receipt/order-derived text, which can
+ * carry packaging/descriptor words that never appear in Woolworths' own
+ * catalogue name at all. Confirmed live: the real stored product_name "Otis
+ * oat milk the everyday one 1l carton" returns nothing (search_products ANDs
+ * every query word, and the real catalogue name has no "carton" in it
+ * anywhere), while the same phrase minus "carton" returns exactly the right
+ * product.
+ *
+ * Deliberately not a curated list of packaging words to strip -- that was
+ * the right call for the *forward* ingest-matching problem (see fuzzy.ts's
+ * COMPOUND_MODIFIER_WORDS), because that was a genuine semantic ambiguity
+ * with no ground truth to check a guess against. This is different: whether
+ * a word belongs in the query is a factual question the real catalogue can
+ * answer directly, one call away -- trimming and re-checking against it is
+ * more general and self-correcting than guessing in advance which words are
+ * "packaging noise" (a list that would need endless maintenance as new
+ * brands invent new descriptor words).
+ *
+ * Trims from the end specifically, since pack/quantity/packaging wording is
+ * the part of a receipt-derived name most likely to diverge from the
+ * catalogue's own phrasing (the same "brand + core product name first,
+ * descriptors after" shape confirmed during the ingest-matching work).
+ * Stops at the FIRST non-empty result -- the least trimming that works, to
+ * minimize the risk of over-trimming into a wrong, more generic product --
+ * and only ever returns the top hit at whichever level succeeds, same as
+ * the untrimmed case always did. A name that's genuinely no longer in the
+ * catalogue still correctly returns null once every attempt is exhausted;
+ * this doesn't turn "not found" into a guess, it just gives a noisy real
+ * name more real chances to resolve first.
  */
 export async function searchTopProductFull(query: string): Promise<WooliesProductFull | null> {
-  const { products } = await callSearchProducts(query, 1);
-  return toFull(products[0] ?? {});
+  const words = query.trim().split(/\s+/).filter(Boolean);
+  const attempts = Math.min(MAX_TRIM_ATTEMPTS + 1, words.length - MIN_QUERY_WORDS + 1, words.length);
+
+  for (let i = 0; i < Math.max(attempts, 1); i++) {
+    const wordCount = words.length - i;
+    const attemptQuery = words.slice(0, wordCount).join(" ");
+    const { products } = await callSearchProducts(attemptQuery, 1);
+    const top = toFull(products[0] ?? {});
+    if (top) return top;
+  }
+  return null;
 }
 
 // Safety cap on pages followed, independent of the real-world 1-2 pages a

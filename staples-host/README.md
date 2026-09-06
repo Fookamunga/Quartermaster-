@@ -319,6 +319,33 @@ fully resolved and ready to present — or an empty list (never a guess) if
 (discontinued/delisted products are dropped individually, not treated as a
 failure of the whole call).
 
+**Resolving a historical `product_name` retries with the query trimmed from
+the end if the full phrase comes back empty** (`searchTopProductFull` in
+`wooliesClient.ts`). Found live: `product_name` is receipt/order-derived
+text, which can carry packaging words the real catalogue name never had —
+the stored `"Otis oat milk the everyday one 1l carton"` returned nothing
+(`search_products` ANDs every query word, and the real catalogue name has no
+"carton" in it at all), while the same phrase minus "carton" resolved
+immediately. Deliberately not a curated list of packaging words to strip —
+unlike `fuzzy.ts`'s `COMPOUND_MODIFIER_WORDS` (a genuine semantic ambiguity
+with no ground truth to check a guess against), whether a word belongs here
+is a factual question the real catalogue answers directly, one call away, so
+retrying against it is more general and self-correcting than guessing which
+words are "noise" in advance. Trims one word at a time from the end (the
+part of a receipt-derived name most likely to diverge from the catalogue's
+own wording), stops at the first non-empty result (least trimming that
+works, to avoid over-trimming into a wrong, more generic product), never
+below 2 words, and capped at 2 trims — bounding worst-case latency, since
+`rankAlternatives` already resolves up to 10 events *sequentially* against
+this same external dependency, and an uncapped retry on a name that never
+resolves at all (the case that costs the most attempts) risked turning one
+`suggest_alternatives` call into enough round-trips to blow past the warm
+session's 40s per-tool-call timeout. A genuinely discontinued/unmatchable
+product still correctly returns null once every attempt is exhausted.
+Verified against the real failing case (now resolves), a genuine no-match
+(still correctly null), and a clean query needing no retry (unchanged, no
+added latency).
+
 **Best-value entry** (`src/bestValue.ts`): once the top-ranked candidate
 resolves, one further search compares it against the same *variety* —
 any brand, e.g. all Edam cheese, not narrowed to the top pick's own brand.
