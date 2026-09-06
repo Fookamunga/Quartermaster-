@@ -8,7 +8,7 @@ export interface OrderTextExtraction {
   // Order/invoice number, e.g. "Order Confirmation/Invoice Number CD47859895".
   // Reused directly as the purchase-event dedup key -- see ingestOrderText.ts.
   order_reference: string | null;
-  items: string[];
+  items: { name: string; quantity: number }[];
 }
 
 function buildPrompt(referenceDate: string): string {
@@ -30,16 +30,21 @@ Extract three things:
    step 1a, if that header is present). Otherwise null -- an informal list
    with no such header has no order reference.
 
-3. Every purchased item's plain product name, one per line item. Lines that are
-   category/section headers (e.g. "Chocolate, Sweets & Snacks", "Dairy" — no
-   leading item reference number or quantity) are NOT items — skip them. Ignore
-   price, quantity, SKU, and order/ref-number columns; extract just the product
-   name/description. Real pastes from an order-confirmation page/PDF often lose
-   exact column alignment — use judgment on where the item name starts and ends,
-   the way you'd read it yourself.
+3. Every purchased item's plain product name and quantity, one per line item.
+   Lines that are category/section headers (e.g. "Chocolate, Sweets & Snacks",
+   "Dairy" — no leading item reference number or quantity) are NOT items —
+   skip them. Ignore price, SKU, and order/ref-number columns; extract just
+   the product name/description and quantity. Real pastes from an
+   order-confirmation page/PDF often lose exact column alignment — use
+   judgment on where the item name starts and ends, the way you'd read it
+   yourself. Some order confirmations show both an ordered quantity and a
+   supplied/received quantity (e.g. after a substitution or partial
+   fulfillment) — when both are shown, use the supplied/received one, since
+   that's what actually entered the household. When only one quantity is
+   shown, use that. When no quantity is determinable at all, use 1.
 
 Respond with ONLY a JSON object of this exact shape, nothing else:
-{"date": "YYYY-MM-DD" or null, "order_reference": "<id>" or null, "items": ["<item name>", ...]}
+{"date": "YYYY-MM-DD" or null, "order_reference": "<id>" or null, "items": [{"name": "<item name>", "quantity": <number>}, ...]}
 If you can't find any items, use an empty items array.`;
 }
 
@@ -82,9 +87,21 @@ export async function extractOrderText(text: string): Promise<OrderTextExtractio
 function parseExtraction(text: string): OrderTextExtraction {
   const parsed = extractJsonObject(text, "Order text extraction");
   const items = Array.isArray(parsed.items)
-    ? parsed.items.filter(
-        (v: unknown): v is string => typeof v === "string" && v.trim().length > 0,
-      )
+    ? parsed.items
+        .filter(
+          (v: unknown): v is { name: unknown; quantity: unknown } =>
+            typeof v === "object" && v !== null && "name" in v,
+        )
+        .filter((v): v is { name: string; quantity: unknown } =>
+          typeof v.name === "string" && v.name.trim().length > 0,
+        )
+        .map((v) => ({
+          name: v.name,
+          quantity:
+            typeof v.quantity === "number" && Number.isFinite(v.quantity) && v.quantity > 0
+              ? v.quantity
+              : 1,
+        }))
     : [];
   const date =
     typeof parsed.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)

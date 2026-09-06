@@ -3,7 +3,7 @@ import { EXTRACTION_MAX_TOKENS, EXTRACTION_MODEL } from "./config.js";
 import { assertCleanCompletion, extractJsonObject } from "./extractionGuard.js";
 
 export interface ReceiptExtraction {
-  lines: string[];
+  lines: { name: string; quantity: number }[];
   // Order/invoice number, e.g. an online order receipt showing "Order
   // Confirmation/Invoice Number CD47859895" near the top. In-store receipts
   // usually won't have one -- null in that case.
@@ -14,15 +14,17 @@ const EXTRACTION_PROMPT = `You are looking at a photo of a grocery store receipt
 
 Extract two things:
 
-1. Every purchased grocery/household item as a plain product name, one per
-   line, stripped of price, quantity, SKU, and store/tax/total lines.
-   Normalize away store abbreviations where obvious (e.g. "MLK 2L" -> "Milk 2L").
+1. Every purchased grocery/household item, one per line, as its plain
+   product name (stripped of price, SKU, and store/tax/total lines --
+   normalize away store abbreviations where obvious, e.g. "MLK 2L" ->
+   "Milk 2L") together with the quantity purchased. If a line doesn't show
+   a quantity (most single-unit lines won't), use 1.
 2. An order/invoice reference number, if present -- e.g. an online order
    receipt showing "Order Confirmation/Invoice Number CD47859895" near the
    top. In-store receipts usually won't have one; use null in that case.
 
 Respond with ONLY a JSON object of this exact shape, nothing else:
-{"order_reference": "<id>" or null, "items": ["<item name>", ...]}
+{"order_reference": "<id>" or null, "items": [{"name": "<item name>", "quantity": <number>}, ...]}
 If you can't read any items, use an empty items array.`;
 
 /**
@@ -72,9 +74,21 @@ export async function extractReceiptLines(
 function parseExtraction(text: string): ReceiptExtraction {
   const parsed = extractJsonObject(text, "Receipt vision extraction");
   const lines = Array.isArray(parsed.items)
-    ? parsed.items.filter(
-        (v: unknown): v is string => typeof v === "string" && v.trim().length > 0,
-      )
+    ? parsed.items
+        .filter(
+          (v: unknown): v is { name: unknown; quantity: unknown } =>
+            typeof v === "object" && v !== null && "name" in v,
+        )
+        .filter((v): v is { name: string; quantity: unknown } =>
+          typeof v.name === "string" && v.name.trim().length > 0,
+        )
+        .map((v) => ({
+          name: v.name,
+          quantity:
+            typeof v.quantity === "number" && Number.isFinite(v.quantity) && v.quantity > 0
+              ? v.quantity
+              : 1,
+        }))
     : [];
   const order_reference =
     typeof parsed.order_reference === "string" && parsed.order_reference.trim().length > 0

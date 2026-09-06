@@ -11,17 +11,21 @@ export function registerListStaples(server: McpServer): void {
       description:
         "List every staple item with its current status (not_due/due/overdue), " +
         "last purchase date, and restock rate. Never say 'interval' in " +
-        "user-facing text -- always 'restock rate'. Two rendering modes " +
-        "depending on what was asked for:\n" +
+        "user-facing text -- always 'restock rate'. replenishment_interval_days " +
+        "means different things depending on interval_confidence: for 'manual' " +
+        "it's a flat day-count, phrase as 'restock rate: every <N> days'; for " +
+        "'learned' it's a days-per-unit rate (scaled by how much was bought " +
+        "last time), phrase as 'restock rate: ~<N> days per unit'; for " +
+        "'seeded' there's no rate at all, phrase as 'no restock rate set yet'. " +
+        "Two rendering modes depending on what was asked for:\n" +
         "(a) 'show me my staples' (the default, full-detail view) -- one " +
         "combined line per item, exactly: '<name> — <last bought <date> " +
-        "OR no purchase on record> — <restock rate: every <N> days OR " +
-        "no restock rate set yet>'. For example:\n" +
+        "OR no purchase on record> — <restock rate phrase>'. For example:\n" +
         "Bread — last bought 2025-08-18 — restock rate: every 5 days\n" +
+        "Oat milk — last bought 2025-09-01 — restock rate: ~7 days per unit\n" +
         "Fish sauce — no purchase on record — no restock rate set yet\n" +
         "(b) 'show my restock rate'/'show my staples update status' -- " +
-        "simpler, just '<name> — <restock rate: every <N> days OR no " +
-        "restock rate set yet>', no last-bought part.",
+        "simpler, just '<name> — <restock rate phrase>', no last-bought part.",
     },
     async () => {
       const db = await readDb();
@@ -36,10 +40,13 @@ export function registerListStaples(server: McpServer): void {
       // during this project's own testing).
       const items = db.items
         .map((item) => {
-          const eventCount = db.purchase_events.filter((e) => e.item_id === item.item_id).length;
+          const eventsForItem = db.purchase_events
+            .filter((e) => e.item_id === item.item_id)
+            .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+          const lastPurchaseQuantity = eventsForItem[0]?.quantity ?? null;
           return {
             name: item.name,
-            status: computeStatus(item, eventCount),
+            status: computeStatus(item, eventsForItem.length, lastPurchaseQuantity),
             last_purchased: item.last_purchased,
             replenishment_interval_days: item.replenishment_interval_days,
             interval_confidence: item.interval_confidence,

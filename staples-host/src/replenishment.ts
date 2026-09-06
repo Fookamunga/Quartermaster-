@@ -12,21 +12,50 @@ export function daysSince(dateIso: string): number {
 }
 
 /**
- * Median gap (in days) between consecutive purchases, sorted oldest to
- * newest. Median rather than mean so one early/late outlier purchase
- * doesn't skew the whole estimate.
+ * Median per-unit rate (days/unit) between consecutive purchases, sorted
+ * oldest to newest -- e.g. 5 units lasting 35 days contributes 7 days/unit.
+ * A null quantity (an event recorded before quantity was captured) is
+ * treated as 1, so old history degrades to the pre-quantity flat-interval
+ * math instead of skewing the rate. Median rather than mean so one
+ * early/late outlier purchase doesn't skew the whole estimate. Rounded to
+ * one decimal place -- coarser than that loses real precision once this
+ * rate gets multiplied by a large quantity (e.g. a bulk buy of 10), but
+ * more precision than that would just be noise from day-granularity data.
  */
-export function medianIntervalDays(sortedDates: string[]): number | null {
-  if (sortedDates.length < 3) return null;
+export function medianIntervalDays(
+  sortedEvents: { date: string; quantity: number | null }[],
+): number | null {
+  if (sortedEvents.length < 3) return null;
   const gaps: number[] = [];
-  for (let i = 1; i < sortedDates.length; i++) {
-    gaps.push(daysBetween(sortedDates[i - 1], sortedDates[i]));
+  for (let i = 1; i < sortedEvents.length; i++) {
+    const days = daysBetween(sortedEvents[i - 1].date, sortedEvents[i].date);
+    const quantity = sortedEvents[i - 1].quantity ?? 1;
+    gaps.push(days / quantity);
   }
   gaps.sort((a, b) => a - b);
   const mid = Math.floor(gaps.length / 2);
   const median =
     gaps.length % 2 === 0 ? (gaps[mid - 1] + gaps[mid]) / 2 : gaps[mid];
-  return Math.round(median);
+  return Math.round(median * 10) / 10;
+}
+
+/**
+ * The interval to actually anchor status math against: for "manual", the
+ * flat day-count as-is (a human's explicit choice is deliberately
+ * quantity-blind -- see CLAUDE.md). For "learned", replenishment_interval_days
+ * is a days-per-unit rate, so it's scaled by the most recent purchase's
+ * quantity (null/undetermined treated as 1). For "seeded" (no rate at all),
+ * null either way.
+ */
+export function effectiveIntervalDays(
+  item: Pick<Item, "replenishment_interval_days" | "interval_confidence">,
+  lastPurchaseQuantity: number | null,
+): number | null {
+  if (item.replenishment_interval_days == null) return null;
+  if (item.interval_confidence === "learned") {
+    return item.replenishment_interval_days * (lastPurchaseQuantity ?? 1);
+  }
+  return item.replenishment_interval_days;
 }
 
 /**
@@ -58,11 +87,15 @@ export function computeStatusFromAnchor(
  * and calls computeStatusFromAnchor directly — see CLAUDE.md.
  */
 export function computeStatus(
-  item: Pick<Item, "replenishment_interval_days" | "last_purchased">,
+  item: Pick<Item, "replenishment_interval_days" | "interval_confidence" | "last_purchased">,
   eventCountForItem: number,
+  lastPurchaseQuantity: number | null,
 ): ItemStatus {
   if (eventCountForItem < 2) return "not_due";
-  return computeStatusFromAnchor(item.replenishment_interval_days, item.last_purchased);
+  return computeStatusFromAnchor(
+    effectiveIntervalDays(item, lastPurchaseQuantity),
+    item.last_purchased,
+  );
 }
 
 // Household is in NZ (Woolworths NZ, NZ Tailscale-hosted infra) but the
@@ -134,12 +167,14 @@ export function recomputeItemSummary(
   item.last_purchased_source = latest.source;
 
   if (sorted.length >= 3 && item.interval_confidence !== "manual") {
-    const learned = medianIntervalDays(sorted.map((e) => e.date));
+    const learned = medianIntervalDays(
+      sorted.map((e) => ({ date: e.date, quantity: e.quantity })),
+    );
     if (learned != null) {
       item.replenishment_interval_days = learned;
       item.interval_confidence = "learned";
     }
   }
 
-  item.status = computeStatus(item, sorted.length);
+  item.status = computeStatus(item, sorted.length, latest.quantity);
 }

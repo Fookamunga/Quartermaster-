@@ -115,7 +115,11 @@ queries. Only staples-host touches this volume.
   supply one), sku (a real Woolworths product SKU, when the source structurally
   provides one — expected only from the future `order_history_api` source,
   never reliably present on a scanned receipt or pasted order text, so
-  `receipt_scan` events always leave this null rather than guessing)
+  `receipt_scan` events always leave this null rather than guessing),
+  quantity (units purchased; every write path sets a concrete number,
+  defaulting to 1 when the source doesn't determine one — null only appears
+  on events recorded before this field existed. Feeds the learned restock
+  rate — see Replenishment logic)
 - A historical `product_name` is re-resolved to a live product by
   staples-host's own `suggest_alternatives` tool (see MCP tools below), never
   baked into a stored `sku` that could go stale as products get discontinued
@@ -127,18 +131,22 @@ queries. Only staples-host touches this volume.
 - `list_staples()` — every staple's name, status, last purchase date, and
   restock rate. Covers both "show me my staples" and "show my restock
   rate"/"show my staples update status" — same data, rendered differently by
-  whichever front end asked, no separate status-query tool needed:
+  whichever front end asked, no separate status-query tool needed. Restock
+  rate phrasing depends on `interval_confidence`: `manual` → "restock rate:
+  every N days"; `learned` → "restock rate: ~N days per unit" (a per-unit
+  rate now, not a flat gap — see Replenishment logic); `seeded` → "no
+  restock rate set yet".
   - "show me my staples" (the default, full-detail view) — one combined
     line per item: `<name> — <last bought <date> or no purchase on record>
-    — <restock rate: every <N> days or no restock rate set yet>`, e.g.
+    — <restock rate phrase>`, e.g.
     `Bread — last bought 2025-08-18 — restock rate: every 5 days` /
+    `Oat milk — last bought 2025-09-01 — restock rate: ~7 days per unit` /
     `Fish sauce — no purchase on record — no restock rate set yet`.
   - "show my restock rate"/"show my staples update status" — simpler:
-    just `<name> — <restock rate: every <N> days or no restock rate set
-    yet>`, no last-bought part.
+    just `<name> — <restock rate phrase>`, no last-bought part.
 - `get_item(name)`
-- `record_purchase(item_name, date, source, raw_ref?)` — fuzzy-match, append event,
-  update summary
+- `record_purchase(item_name, date, source, quantity?, raw_ref?)` — fuzzy-match,
+  append event, update summary. `quantity` optional, defaults to 1.
 - `add_staple(name, interval_days?)` — add a new staple to track.
   `interval_days` optional; if omitted, the item starts with no restock rate
   at all (`seeded`, the same "not enough data yet" state a fresh item always
@@ -298,26 +306,67 @@ queries. Only staples-host touches this volume.
   workspace CLAUDE.md's "Choosing a Product Among Multiple Matches" for which
   product each tier anchors this on.
 - `filter_staples(ingredients: string[])` — which ingredients aren't already-stocked
-- `ingest_receipt(image)` — vision extraction (line items + order/invoice
-  reference number, when present) → order_reference dedup check → fuzzy-match →
-  `record_purchase` per line, return unmatched lines. See "Order-reference
+- `ingest_receipt(image)` — vision extraction (line items + quantity per line +
+  order/invoice reference number, when present) → order_reference dedup check →
+  fuzzy-match → record per line, return unmatched lines. See "Order-reference
   dedup" below.
 - `ingest_order_text(text, date?, raw_ref?)` — mirrors `ingest_receipt` for pasted
   order-confirmation/order-list text instead of a photo: one-shot text extraction
-  (header date + order/invoice reference number, or a stated date, or today) →
-  order_reference dedup check → fuzzy-match → record per line, return
-  matched/unmatched. Built to close discordbot-host's `#order-import`
+  (header date + order/invoice reference number, or a stated date, or today +
+  quantity per line) → order_reference dedup check → fuzzy-match → record per
+  line, return matched/unmatched. Built to close discordbot-host's `#order-import`
   text-parsing gap — see that section for detail.
+  Quantity capture (both ingest tools): the extraction prompt captures the
+  quantity actually supplied/received per line, not the quantity originally
+  ordered when the two differ (e.g. a substitution or partial fulfillment) —
+  consistent with how a substitution already resolves to the product actually
+  received elsewhere in this flow. Defaults to 1 when no quantity is
+  determinable from the source.
 **Replenishment logic:** new items start `seeded`, `status = not_due` until ≥2
-purchase events exist. At ≥3 events, restock rate = median gap between purchases
-(outlier-resistant), confidence → `learned`. Items with no restock rate never
-surface as due. Status thresholds: `not_due` while `days_since_last_purchased
-< restock rate`; `due` once `days_since_last_purchased >= restock rate`;
-`overdue` once `days_since_last_purchased >= restock rate * OVERDUE_MULTIPLIER`.
+purchase events exist. What `replenishment_interval_days` actually means, and
+how status is computed from it, now depends on `interval_confidence`:
+
+- `manual` (set via `add_staple`/`update_staple`): a flat day-count, exactly as
+  before quantity-awareness was added. A human choosing a fixed cadence is
+  implicitly choosing one that doesn't vary by how much they buy — this mode
+  is entirely quantity-blind by design, and nothing below applies to it.
+- `learned` (computed from history, ≥3 events): `replenishment_interval_days`
+  is a **days-per-unit rate**, not a flat gap — e.g. 5 units lasting 35 days
+  learns a rate of 7 days/unit. Learned as the median, across consecutive
+  purchase-event pairs, of `days_between ÷ earlier_event's_quantity`
+  (outlier-resistant, same as the old plain-date median). An event with
+  `quantity: null` (recorded before quantity was captured) is treated as 1,
+  so pre-existing history degrades gracefully to the old flat-interval math
+  rather than needing a backfill.
+- `seeded`: no rate at all yet, never surfaces as due.
+
+The **effective interval** used for status math (`effectiveIntervalDays()` in
+`replenishment.ts`) is the flat value for `manual`, or the learned per-unit
+rate × the most recent purchase's quantity for `learned` — e.g. a 7-days/unit
+rate with a last purchase of 2 units projects 14 days out; a last purchase of
+5 units projects 35 days out. This is why "next due" now reflects what was
+actually bought last time rather than a single static number. Status
+thresholds apply to that effective interval exactly as before: `not_due`
+while `days_since_last_purchased < effective interval`; `due` once
+`days_since_last_purchased >= effective interval`; `overdue` once
+`days_since_last_purchased >= effective interval * OVERDUE_MULTIPLIER`.
 `OVERDUE_MULTIPLIER` was introduced during the build as a tunable constant
 (not specified in this brief) — confirm its actual configured value, since it
 controls how much slack an item gets before escalating from a soft "due"
 nudge to an "overdue" alert.
+
+**Known limitation, not solved:** this model assumes usage scales roughly
+linearly with quantity, which holds for non-perishables (e.g. toilet paper,
+detergent) but may not for perishables bought in bulk (e.g. 5 bananas may not
+last 5x as long as 1, if some spoil before use). No signal exists today to
+distinguish the two cases; a per-unit rate is used uniformly, and this is
+accepted as a known inaccuracy rather than something worth solving without a
+concrete signal to act on.
+
+`suggest_alternatives`'s ranking and `get_best_value`'s computation are
+architecturally independent of all of this — neither reads
+`replenishment_interval_days`/`interval_confidence`/status anywhere, so this
+redesign doesn't touch them.
 
 **Manual restock rates are never silently overwritten.** Once `add_staple`/
 `update_staple` sets a restock rate (`interval_confidence: "manual"`),
@@ -334,13 +383,12 @@ work that introduced this policy: a discrepancy alert — if the learned value
 disagrees meaningfully with a manual setting (e.g. real usage suggests
 running out earlier than the manual restock rate assumes) — should eventually
 surface as a nudge rather than staying silent. Building this would mean
-computing the learned median for manual items too (currently skipped
-entirely, not just computed-and-unapplied) and storing it separately for
-comparison, without ever overwriting the manual value. Not built now, just
-flagged here so it isn't lost. Separately — and also not part of this work —
-the restock rate calculation itself (currently date-only, ignoring purchase
-quantity) is being redesigned as its own task; this policy sits on top of
-whatever that calculation produces, not part of it.
+computing the learned rate for manual items too (currently skipped entirely,
+not just computed-and-unapplied) and storing it separately for comparison,
+without ever overwriting the manual value. Not built now, just flagged here
+so it isn't lost. This policy is unaffected by the quantity-aware redesign
+above: `manual` stays a flat, quantity-blind day-count either way, so "never
+silently overwrite manual" needed no change to accommodate per-unit learning.
 
 **Order-reference dedup (primary, live now):** every purchase event carries an
 `order_reference` — the order/invoice number (e.g. Woolworths NZ's "Order

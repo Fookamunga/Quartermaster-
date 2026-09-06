@@ -19,6 +19,12 @@ export function registerRecordPurchase(server: McpServer): void {
         item_name: z.string().min(1),
         date: isoDate.describe("Purchase date, YYYY-MM-DD"),
         source: z.enum(["receipt_scan", "order_history_api"]),
+        quantity: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Quantity purchased, defaults to 1"),
         raw_ref: z
           .string()
           .optional()
@@ -27,7 +33,7 @@ export function registerRecordPurchase(server: McpServer): void {
           ),
       },
     },
-    async ({ item_name, date, source, raw_ref }) => {
+    async ({ item_name, date, source, quantity, raw_ref }) => {
       return withDb((db) => {
         const item = findBestItemMatch(db.items, item_name);
         if (!item) {
@@ -45,6 +51,7 @@ export function registerRecordPurchase(server: McpServer): void {
           order_reference: null,
           product_name: null,
           sku: null,
+          quantity: quantity ?? 1,
           created_at: new Date().toISOString(),
         };
         db.purchase_events.push(event);

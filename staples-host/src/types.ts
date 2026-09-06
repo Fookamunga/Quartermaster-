@@ -51,6 +51,13 @@ export interface PurchaseEvent {
   // reliably present on a scanned receipt or pasted order text, so
   // receipt_scan events always leave this null rather than guessing.
   sku: string | null;
+  // Quantity actually purchased/supplied. Every write path now sets a
+  // concrete number (defaulting to 1 when the source doesn't determine one) --
+  // null only ever appears on events recorded before this field existed.
+  // recomputeItemSummary/medianIntervalDays treat a null the same as 1, so
+  // pre-existing history degrades gracefully to the old flat-interval math
+  // rather than needing a backfill. See CLAUDE.md's Replenishment logic.
+  quantity: number | null;
   created_at: string; // ISO datetime
 }
 

@@ -139,6 +139,60 @@ stored field against it on read, so the stale value passed straight
 through. Re-deriving on every read closes that whole class of risk instead
 of just the one instance.
 
+### Quantity-aware restock rate
+
+The original median-gap calculation above was date-only — it never looked at
+*how much* was bought each time, so "restock rate" was a single flat number
+regardless of whether the last purchase was 1 unit or 10. Redesigned so the
+rate scales with purchase size:
+
+- **`manual`** (`add_staple`/`update_staple`) is completely unchanged — still
+  a flat day-count, `computeStatusFromAnchor` called directly. Deliberately
+  quantity-blind: a human picking a fixed cadence ("remind me every 2 weeks
+  regardless") is a real, common case, not an oversight to fix.
+- **`learned`** now means `replenishment_interval_days` is a **days-per-unit
+  rate**, not a flat gap. `medianIntervalDays` (in `replenishment.ts`) divides
+  each consecutive-purchase gap by the *earlier* event's quantity before
+  taking the median — e.g. 5 units lasting 35 days contributes 7 days/unit to
+  the median, same outlier-resistance as before. A `quantity: null` event
+  (recorded before this field existed) is treated as 1, so old purchase
+  history degrades to the original flat-interval math with no backfill
+  needed.
+- A new `effectiveIntervalDays(item, lastPurchaseQuantity)` is what actually
+  feeds `computeStatusFromAnchor`: the flat value for `manual`, or the
+  learned rate × the most recent purchase's quantity for `learned`. This is
+  why "next due" now reflects what was actually bought last time — buying 5
+  projects ~5x further out than buying 1, at the same learned per-unit rate.
+- `PurchaseEvent` gained a `quantity: number | null` field. Every write path
+  (`record_purchase`'s new optional `quantity` param, and both ingest tools'
+  extraction prompts) now sets a concrete number, defaulting to 1 when not
+  determinable — `null` only ever appears on events recorded before this
+  field existed.
+- **Known, accepted limitation, not solved:** this assumes usage scales
+  linearly with quantity, true for non-perishables (toilet paper, detergent)
+  but not necessarily for perishables bought in bulk (5 bananas may not last
+  5x as long as 1 before some spoil). No signal exists today to tell the two
+  cases apart; a uniform per-unit rate is used regardless, and this is
+  documented as a known inaccuracy rather than solved without a concrete
+  signal to act on.
+- `suggest_alternatives` and `get_best_value` were confirmed (via a full
+  grep of every file touching `replenishment_interval_days`/
+  `interval_confidence`/`computeStatus`) to never read any of these fields —
+  this redesign has zero effect on ranking or best-value.
+
+Verified locally (`replenishment.ts`'s exported functions, no live NAS/Discord
+traffic yet): the approved sanity check reproduced exactly (5 units/35 days
+→ learned rate 7 days/unit → a 2-unit last purchase projects 14 days out, a
+5-unit one projects 35); manual items confirmed provably unaffected across
+quantities 1/50/null; legacy `quantity: null` events confirmed to degrade to
+the old flat 7-day median; and an end-to-end `recomputeItemSummary` run
+confirmed the learned rate and the resulting status both come out correctly
+from a synthetic purchase history. Not yet verified: the extraction prompts'
+actual quantity capture from a real receipt photo or pasted order text (that
+needs a live Anthropic API call against real content, not yet run for this
+change) — the calculation side is proven, the extraction side is unverified
+until then.
+
 ## list_staples
 
 Returns `status`, `last_purchased`, and `replenishment_interval_days`/
@@ -214,12 +268,13 @@ normally at 3+ events, unaffected.
 ## ingest_receipt
 
 Takes a base64-encoded photo, asks Claude (one Messages API call) to extract line
-items as a plain JSON array of names, then fuzzy-matches each against the staples
-list and records a `receipt_scan` purchase event per match. Unmatched lines come
-back in the response for manual review — nothing is auto-created from a receipt.
-Each recorded event's `product_name` is the extracted line text itself (e.g.
-"Mainland Cheese Edam 500g"); `sku` stays null, since a receipt photo never
-reliably shows a real Woolworths product SKU.
+items as a JSON array of `{name, quantity}` objects, then fuzzy-matches each name
+against the staples list and records a `receipt_scan` purchase event per match,
+`quantity` carried straight into the event (defaults to 1 when the receipt line
+doesn't show one). Unmatched lines come back in the response for manual review —
+nothing is auto-created from a receipt. Each recorded event's `product_name` is
+the extracted line text itself (e.g. "Mainland Cheese Edam 500g"); `sku` stays
+null, since a receipt photo never reliably shows a real Woolworths product SKU.
 
 ## ingest_order_text
 
@@ -237,9 +292,15 @@ from an `Order Confirmation/Invoice Number <ID> <DD Mon, YYYY>` header if
 present, (2) otherwise a date stated informally in the text (e.g. "bought this
 on the 3rd"), resolved relative to today, (3) otherwise `null` (the tool then
 defaults to today). Category/section header lines (no leading ref number) are
-filtered out as not-items. Each remaining line is fuzzy-matched and recorded
+filtered out as not-items. Each remaining line item is extracted as
+`{name, quantity}` — when an order confirmation shows both an ordered and a
+supplied/received quantity (e.g. after a substitution or partial
+fulfillment), the prompt is instructed to use the supplied/received one,
+consistent with substitutions already resolving to the product actually
+received elsewhere in this flow; defaults to 1 when no quantity is
+determinable at all. Each remaining line is fuzzy-matched and recorded
 exactly like `ingest_receipt`'s per-line loop — same `receipt_scan` source,
-same matched/unmatched response shape. The extracted invoice ID (or the
+`quantity` carried into the event, same matched/unmatched response shape. The extracted invoice ID (or the
 caller's `raw_ref`, or the line text itself) becomes each event's `raw_ref`;
 separately, the raw line text itself (e.g. "Mainland Cheese Edam 500g")
 always becomes that event's `product_name`, regardless of what `raw_ref`

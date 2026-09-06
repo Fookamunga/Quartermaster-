@@ -14,7 +14,11 @@ export function registerGetItem(server: McpServer): void {
         "Look up a single staple by name (fuzzy-matched) and return its full " +
         "detail, including its recent purchase-event history. Present " +
         "replenishment_interval_days to the user as 'restock rate' -- never " +
-        "say 'interval' in user-facing text.",
+        "say 'interval' in user-facing text. Its meaning depends on " +
+        "interval_confidence: 'manual' is a flat day-count ('restock rate: " +
+        "every <N> days'); 'learned' is a days-per-unit rate scaled by the " +
+        "most recent purchase_events entry's quantity ('restock rate: ~<N> " +
+        "days per unit'); 'seeded' means no rate is set yet.",
       inputSchema: {
         name: z.string().min(1).describe("Item name, e.g. 'oat milk'"),
       },
@@ -33,7 +37,11 @@ export function registerGetItem(server: McpServer): void {
       // drift via manual data manipulation, but re-deriving it on every
       // read closes that risk entirely rather than relying on every write
       // path getting it right forever).
-      return toolJson({ item: { ...item, status: computeStatus(item, events.length) }, purchase_events: events });
+      const lastPurchaseQuantity = events[0]?.quantity ?? null;
+      return toolJson({
+        item: { ...item, status: computeStatus(item, events.length, lastPurchaseQuantity) },
+        purchase_events: events,
+      });
     },
   );
 }

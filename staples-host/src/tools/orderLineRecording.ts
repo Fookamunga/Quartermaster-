@@ -3,6 +3,11 @@ import { recomputeItemSummary } from "../replenishment.js";
 import { newEventId } from "../storage.js";
 import type { Database } from "../types.js";
 
+export interface OrderLineItem {
+  name: string;
+  quantity: number;
+}
+
 export interface RecordedLine {
   line: string;
   item_name: string;
@@ -34,7 +39,7 @@ export interface RecordLinesResult {
  */
 export function recordOrderLines(
   db: Database,
-  lines: string[],
+  items: OrderLineItem[],
   purchaseDate: string,
   orderReference: string | null,
   rawRefFor: (line: string) => string | null,
@@ -51,7 +56,7 @@ export function recordOrderLines(
   const already_recorded: RecordedLine[] = [];
   const unmatched: string[] = [];
 
-  for (const line of lines) {
+  for (const { name: line, quantity } of items) {
     const item = findBestItemMatch(db.items, line);
     if (!item) {
       unmatched.push(line);
@@ -76,6 +81,7 @@ export function recordOrderLines(
       // specific product this event was).
       product_name: line,
       sku: null,
+      quantity,
       created_at: new Date().toISOString(),
     });
 
