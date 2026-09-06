@@ -90,7 +90,7 @@ reconciliation ever needs real queries (per CLAUDE.md) — not needed yet.
   found, so nothing needed correcting — only future ingests were at risk.
 - New items start `interval_confidence: seeded`, `status: not_due` (whether
   created via `add_staple` with no `interval_days`, or organically with no
-  interval set at all).
+  restock rate set at all).
 - Status is only ever evaluated once an item has **2+ purchase events** — below
   that there's no purchase history to anchor a due date against.
 - At **3+ events**, `replenishment_interval_days` is recomputed as the median gap
@@ -100,21 +100,21 @@ reconciliation ever needs real queries (per CLAUDE.md) — not needed yet.
   skips the learned-median computation entirely for a manually-set item, no
   matter how many events accumulate — the manual value stays in force until a
   human explicitly changes it via `update_staple`. This was a real behavior
-  change: the interval used to be silently overwritten by the learned median
-  once 3+ events existed, which is exactly backwards from "a human's explicit
-  choice should stick."
-- Items with no interval (not enough data yet) never surface as due.
-- `due` vs `overdue` split: `due` once days-since-purchase ≥ interval, `overdue`
-  once it's ≥ `1.5×` interval (`OVERDUE_MULTIPLIER` in `src/config.ts`, confirmed
-  against CLAUDE.md).
+  change: the restock rate used to be silently overwritten by the learned
+  median once 3+ events existed, which is exactly backwards from "a human's
+  explicit choice should stick."
+- Items with no restock rate (not enough data yet) never surface as due.
+- `due` vs `overdue` split: `due` once days-since-purchase ≥ restock rate,
+  `overdue` once it's ≥ `1.5×` restock rate (`OVERDUE_MULTIPLIER` in
+  `src/config.ts`, confirmed against CLAUDE.md).
 - **Exception — a manually-set anchor date.** The 2+ event gate above only
   applies to the organic, purchase-event-driven path
   (`recomputeItemSummary`/`computeStatus`). `add_staple`/`update_staple`
-  compute status straight from (interval, last_purchased) via
+  compute status straight from (restock rate, last_purchased) via
   `computeStatusFromAnchor`, no event count involved — no anchor yet →
   `status: "due"` right away rather than `not_due`/"not enough data," since a
-  manual interval with nothing to anchor it shouldn't sit silent. **Known,
-  pre-existing discrepancy** (confirmed unchanged from the former
+  manual restock rate with nothing to anchor it shouldn't sit silent.
+  **Known, pre-existing discrepancy** (confirmed unchanged from the former
   `set_interval`'s own behavior, not introduced by this change): `list_staples`/
   `get_item` still derive status via `computeStatus`'s 2+ event gate, so they
   report `not_due` for the same item immediately after `add_staple`/
@@ -132,7 +132,7 @@ never exposed to a stale value regardless of how one might arise — a manual
 live: this project's own test-data cleanup (editing `db.json` directly to
 remove synthetic purchase events, forgetting to also reset `status`) left
 an item with `status: "overdue"` and `replenishment_interval_days: null` —
-a direct violation of "items with no interval never surface as due" above.
+a direct violation of "items with no restock rate never surface as due" above.
 The core due/overdue math was never wrong (`computeStatusFromAnchor` checks
 `intervalDays == null` first, unconditionally), but nothing re-verified the
 stored field against it on read, so the stale value passed straight
@@ -150,8 +150,8 @@ check against existing items, matching the intent Craft-sync's own exact-match
 rule had (a near-miss should create a new item, not silently merge into an
 existing one). No `interval_days` → `seeded`, `not_due`, same state a fresh
 item always started in. `interval_days` given → `interval_confidence: manual`
-and status computed immediately via `computeStatusFromAnchor` (see the
-Replenishment logic exception above).
+(a manually-set restock rate) and status computed immediately via
+`computeStatusFromAnchor` (see the Replenishment logic exception above).
 
 **`remove_staple(name)`** — fuzzy-matched, like every other by-name tool.
 Deletes the item only; its `purchase_events` are retained, not deleted,
@@ -176,11 +176,11 @@ already covers the common case of anchoring a fresh item via a real purchase;
 can be added back if a real need for it turns up.
 
 Verified locally (no network dependency — pure `db.json` logic): `add_staple`
-with/without an interval, duplicate-name rejection, `update_staple` rename +
-interval-manual-marking, rename-collision rejection, `remove_staple` leaving
-history orphaned but harmless to every reader, and the core policy itself —
-a manually-set interval survives 3+ real purchase events completely
-unchanged, confirmed against a real median-interval scenario that would have
+with/without a restock rate, duplicate-name rejection, `update_staple` rename +
+manual-marking, rename-collision rejection, `remove_staple` leaving history
+orphaned but harmless to every reader, and the core policy itself — a
+manually-set restock rate survives 3+ real purchase events completely
+unchanged, confirmed against a real median-based scenario that would have
 silently overwritten it under the old behavior — alongside a regression
 check that a genuinely `seeded` (never manually touched) item still learns
 normally at 3+ events, unaffected.

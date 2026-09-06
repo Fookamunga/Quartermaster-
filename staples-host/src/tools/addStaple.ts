@@ -16,10 +16,10 @@ export function registerAddStaple(server: McpServer): void {
       title: "Add staple",
       description:
         "Add a new staple to track. interval_days is optional -- if " +
-        "omitted, the item starts with no interval at all (the same " +
+        "omitted, the item starts with no restock rate at all (the same " +
         "'not enough data yet' state as a fresh Craft-synced item used to " +
         "start in), eligible to learn one automatically once enough real " +
-        "purchase history exists. If given, the interval is marked " +
+        "purchase history exists. If given, the restock rate is marked " +
         "'manual' and is never silently overwritten by a learned value, " +
         "even once enough history exists to compute one -- see " +
         "update_staple to change it later. Fails if a staple with this " +
@@ -31,7 +31,7 @@ export function registerAddStaple(server: McpServer): void {
           .int()
           .positive()
           .optional()
-          .describe("Replenishment interval in days, if already known"),
+          .describe("Restock rate in days, if already known"),
       },
     },
     async ({ name, interval_days }) => {

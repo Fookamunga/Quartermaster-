@@ -100,8 +100,8 @@ queries. Only staples-host touches this volume.
 **Data model:**
 - `items`: item_id, name, sku (cached, self-heals via woolies-mcp `search_products`
   if stale), replenishment_interval_days (null until set or learned), interval_confidence
-  (`seeded` | `learned` | `manual` — `seeded` now means only "no interval at
-  all yet"; `manual` is a human-set interval via `add_staple`/`update_staple`,
+  (`seeded` | `learned` | `manual` — `seeded` now means only "no restock rate
+  at all yet"; `manual` is a human-set restock rate via `add_staple`/`update_staple`,
   never silently overwritten by a learned value — see Replenishment logic),
   status (`not_due` | `due` | `overdue`, default `not_due`)
 - `purchase_events` (append-only): event_id, item_id, date, source (`receipt_scan` |
@@ -125,20 +125,20 @@ queries. Only staples-host touches this volume.
 
 **MCP tools:**
 - `list_staples()` — every staple's name, status, last purchase date, and
-  replenishment interval. Covers both "show me my staples" and "show my
-  order interval"/"show my staples update status" — same data, rendered
-  differently by whichever front end asked (a full detailed view vs. a
-  simple name + interval list) — no separate status-query tool needed.
+  restock rate. Covers both "show me my staples" and "show my restock
+  rate"/"show my staples update status" — same data, rendered differently by
+  whichever front end asked (a full detailed view vs. a simple name +
+  restock rate list) — no separate status-query tool needed.
 - `get_item(name)`
 - `record_purchase(item_name, date, source, raw_ref?)` — fuzzy-match, append event,
   update summary
 - `add_staple(name, interval_days?)` — add a new staple to track.
-  `interval_days` optional; if omitted, the item starts with no interval at
-  all (`seeded`, the same "not enough data yet" state a fresh item always
+  `interval_days` optional; if omitted, the item starts with no restock rate
+  at all (`seeded`, the same "not enough data yet" state a fresh item always
   started in), eligible to learn one automatically once enough purchase
-  history exists. If given, the interval is marked `manual` and is never
-  silently overwritten by a learned value even once enough history exists
-  to compute one (see Replenishment logic) — change it later via
+  history exists. If given, the restock rate is marked `manual` and is
+  never silently overwritten by a learned value even once enough history
+  exists to compute one (see Replenishment logic) — change it later via
   `update_staple`. Fails if a staple with this exact name (case-insensitive)
   already exists.
 - `remove_staple(name)` — delete a staple entirely. Its `purchase_events` are
@@ -151,7 +151,7 @@ queries. Only staples-host touches this volume.
   with the same name gets a new `item_id` (via `add_staple`), so it does not
   recover the old history automatically.
 - `update_staple(name, new_name?, interval_days?)` — rename a staple and/or
-  change its interval. Setting `interval_days` marks it `manual`, same
+  change its restock rate. Setting `interval_days` marks it `manual`, same
   never-silently-overwritten guarantee as `add_staple`'s. Replaces the
   former `set_interval` tool — same underlying mechanism
   (`computeStatusFromAnchor`), minus its optional `last_purchased` anchor
@@ -302,37 +302,38 @@ queries. Only staples-host touches this volume.
   matched/unmatched. Built to close discordbot-host's `#order-import`
   text-parsing gap — see that section for detail.
 **Replenishment logic:** new items start `seeded`, `status = not_due` until ≥2
-purchase events exist. At ≥3 events, interval = median gap between purchases
-(outlier-resistant), confidence → `learned`. No-interval items never surface as due.
-Status thresholds: `not_due` while `days_since_last_purchased < interval`; `due`
-once `days_since_last_purchased >= interval`; `overdue` once
-`days_since_last_purchased >= interval * OVERDUE_MULTIPLIER`. `OVERDUE_MULTIPLIER`
-was introduced during the build as a tunable constant (not specified in this brief)
-— confirm its actual configured value, since it controls how much slack an item
-gets before escalating from a soft "due" nudge to an "overdue" alert.
+purchase events exist. At ≥3 events, restock rate = median gap between purchases
+(outlier-resistant), confidence → `learned`. Items with no restock rate never
+surface as due. Status thresholds: `not_due` while `days_since_last_purchased
+< restock rate`; `due` once `days_since_last_purchased >= restock rate`;
+`overdue` once `days_since_last_purchased >= restock rate * OVERDUE_MULTIPLIER`.
+`OVERDUE_MULTIPLIER` was introduced during the build as a tunable constant
+(not specified in this brief) — confirm its actual configured value, since it
+controls how much slack an item gets before escalating from a soft "due"
+nudge to an "overdue" alert.
 
-**Manual intervals are never silently overwritten.** Once `add_staple`/
-`update_staple` sets an interval (`interval_confidence: "manual"`),
+**Manual restock rates are never silently overwritten.** Once `add_staple`/
+`update_staple` sets a restock rate (`interval_confidence: "manual"`),
 `recomputeItemSummary()` skips the learned-median computation entirely for
 that item, even once ≥3 purchase events exist — the manual value stays in
 force until a human explicitly changes it via `update_staple` again. This is
 a distinct concept from the organic `seeded` → `learned` path above (which
 still applies unchanged to any item that was never manually set) — `seeded`
-now means only "no interval at all yet," not "possibly manually seeded,"
+now means only "no restock rate at all yet," not "possibly manually seeded,"
 the two having previously been conflated under one value.
 
 Note for later, out of scope for the Craft-removal/conversational-management
 work that introduced this policy: a discrepancy alert — if the learned value
 disagrees meaningfully with a manual setting (e.g. real usage suggests
-running out earlier than the manual interval assumes) — should eventually
+running out earlier than the manual restock rate assumes) — should eventually
 surface as a nudge rather than staying silent. Building this would mean
 computing the learned median for manual items too (currently skipped
 entirely, not just computed-and-unapplied) and storing it separately for
 comparison, without ever overwriting the manual value. Not built now, just
 flagged here so it isn't lost. Separately — and also not part of this work —
-the interval/replenishment calculation itself (currently date-only, ignoring
-purchase quantity) is being redesigned as its own task; this policy sits on
-top of whatever that calculation produces, not part of it.
+the restock rate calculation itself (currently date-only, ignoring purchase
+quantity) is being redesigned as its own task; this policy sits on top of
+whatever that calculation produces, not part of it.
 
 **Order-reference dedup (primary, live now):** every purchase event carries an
 `order_reference` — the order/invoice number (e.g. Woolworths NZ's "Order
@@ -509,28 +510,28 @@ guild's channels), never creates either.
   Also applies to staples-host's order-history sync calls to woolies-mcp
   (not yet implemented) — an auth failure there must be surfaced the same
   way, not silently treated as "no orders in this period" (which would
-  corrupt the replenishment-interval data).
+  corrupt the restock-rate data).
 - **"Never tracked" item alerting.** Now buildable — staples-host is real.
   Mechanism: a periodic (every 6h) direct host-side call to staples-host's
-  `list_staples()`, filtered to items with an interval set (`learned` or
+  `list_staples()`, filtered to items with a restock rate set (`learned` or
   `manual` confidence) **and** no `last_purchased` anchor — the "Never
   tracked" category (formerly a section in the now-removed Craft status
-  doc), never "not enough data yet" (no interval at all — `seeded`
+  doc), never "not enough data yet" (no restock rate at all — `seeded`
   confidence, which now means specifically that). The filter checks
   `replenishment_interval_days != null` explicitly rather than trusting
   `status: "due"` alone to imply it — a defensive check against the
-  no-interval/no-alert guarantee silently breaking if `status`'s derivation
-  ever changes elsewhere. No-interval items must never trigger a Discord
-  alert under **any** sentry (this one or a future due/overdue one) — the
-  same "stay silent until there's a real basis to flag something" goal the
-  replenishment logic itself was built around. No agent involved in the poll.
-  Posted as its own distinct message, not folded into the auth-failure alert
-  or into cart proposals. Only reposts when the filtered item set actually
-  changed since the last post, so it doesn't repeat itself every 6 hours for
-  no reason. A test-only bypass (env var or manual trigger) lets this be
-  verified on demand instead of waiting up to 6h for real data — the bypass
-  only shortcuts *when* the check runs, never the no-interval exclusion
-  itself.
+  no-restock-rate/no-alert guarantee silently breaking if `status`'s
+  derivation ever changes elsewhere. Items with no restock rate must never
+  trigger a Discord alert under **any** sentry (this one or a future
+  due/overdue one) — the same "stay silent until there's a real basis to
+  flag something" goal the replenishment logic itself was built around. No
+  agent involved in the poll. Posted as its own distinct message, not folded
+  into the auth-failure alert or into cart proposals. Only reposts when the
+  filtered item set actually changed since the last post, so it doesn't
+  repeat itself every 6 hours for no reason. A test-only bypass (env var or
+  manual trigger) lets this be verified on demand instead of waiting up to
+  6h for real data — the bypass only shortcuts *when* the check runs, never
+  the no-restock-rate exclusion itself.
 
 **Drop:**
 - The old nanoclaw-discord warm/streaming session code path specifically —
@@ -583,6 +584,6 @@ time budget.
   which has no purchase-count gate) but `status: "not_due"` from
   `list_staples`/`get_item` immediately after (via `computeStatus`, which
   requires ≥2 purchase events before trusting any anchor). Left as-is,
-  per this task's explicit scope boundary against touching the interval/
+  per this task's explicit scope boundary against touching the restock-rate/
   status-calculation logic — worth resolving whenever that logic is next
   touched (e.g. the separately-planned replenishment-calculation redesign).

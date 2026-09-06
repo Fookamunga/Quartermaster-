@@ -12,7 +12,9 @@ export function registerGetItem(server: McpServer): void {
       title: "Get item",
       description:
         "Look up a single staple by name (fuzzy-matched) and return its full " +
-        "detail, including its recent purchase-event history.",
+        "detail, including its recent purchase-event history. Present " +
+        "replenishment_interval_days to the user as 'restock rate' -- never " +
+        "say 'interval' in user-facing text.",
       inputSchema: {
         name: z.string().min(1).describe("Item name, e.g. 'oat milk'"),
       },

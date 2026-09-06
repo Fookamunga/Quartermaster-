@@ -15,17 +15,17 @@ export function registerUpdateStaple(server: McpServer): void {
     {
       title: "Update staple",
       description:
-        "Rename a staple and/or change its replenishment interval. " +
-        "Setting interval_days marks the interval 'manual' -- it will " +
+        "Rename a staple and/or change its restock rate. " +
+        "Setting interval_days marks the restock rate 'manual' -- it will " +
         "never be silently overwritten by a learned value computed from " +
         "purchase history, even once enough history exists to compute " +
         "one; it stays in force until this tool changes it again. This is " +
-        "the sole way to manually override an interval (replaces the " +
+        "the sole way to manually override a restock rate (replaces the " +
         "former set_interval tool).",
       inputSchema: {
         name: z.string().min(1).describe("Current name of the staple to update"),
         new_name: z.string().min(1).optional(),
-        interval_days: z.number().int().positive().optional(),
+        interval_days: z.number().int().positive().optional().describe("New restock rate in days"),
       },
     },
     async ({ name, new_name, interval_days }) => {
