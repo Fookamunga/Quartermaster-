@@ -131,6 +131,9 @@ and paste it into either the `#order-import` Discord channel or a Claude.ai
 conversation with the staples-host connector. That paste becomes real
 purchase history, which is exactly what the recommendations above draw on.
 
+You can also take a photo of a physical receipt and post that into either
+Claude chat or the `#order-import` Discord channel.
+
 ## Recipe pricing
 
 Asking about a single item (e.g. "add cheese") always includes a best-value
