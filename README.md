@@ -86,9 +86,8 @@ nothing marked, since there's no real signal to recommend one over another:
 
 Either way, asking about one item always includes a best-value pick — the
 cheapest price-per-unit option of that type — regardless of which path found
-the recommendation. Asking for a whole recipe/ingredient list at once skips
-best-value (computing it for every ingredient was too slow to do reliably) —
-ask about a specific item on its own if you want its cheapest option.
+the recommendation. See "Recipe pricing" below for why a whole recipe/
+ingredient list at once doesn't get the same treatment.
 
 These suggestions are only as good as your purchase history, so recording it
 matters. Until Woolworths fixes their order-history API (at which point this
@@ -97,6 +96,26 @@ and order/invoice number — from the Orders page on the Woolworths website,
 and paste it into either the `#order-import` Discord channel or a Claude.ai
 conversation with the staples-host connector. That paste becomes real
 purchase history, which is exactly what the recommendations above draw on.
+
+## Recipe pricing
+
+Asking about a single item (e.g. "add cheese") always includes a best-value
+pick alongside its alternatives — the cheapest price-per-unit option in that
+product's variety, across any brand.
+
+Asking for a whole recipe or ingredient list at once (e.g. "what do I need
+for chilli lime squid salad") does **not** get a best-value pick for each
+ingredient. Computing it means an extra product-variety search per
+ingredient on top of resolving the ingredient itself, and a multi-ingredient
+request already has to resolve everything in one call within the underlying
+API's own response-time limit — adding a best-value search per ingredient
+pushed a realistic recipe well past that limit and produced no reply at all,
+not just a slower one. So recipe/list requests skip best-value entirely and
+return alternatives only.
+
+If you want the cheapest option for one ingredient from a recipe, ask about
+that ingredient on its own afterwards (e.g. "what's the best value cheese")
+and it'll get the full single-item treatment, best-value included.
 
 ## More detail
 
