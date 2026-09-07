@@ -72,8 +72,8 @@ dev environment:
   step is friction-free.
 - Existing containers on the NAS for reference/context (do not touch woolies-mcp):
   - `woolies-mcp` — at whatever path it was deployed to via Container Manager;
-    exposed via Tailscale Funnel on port **8480**. staples-host needs a different
-    port.
+    exposed via Tailscale Funnel on the standard port 443 (its own container
+    listens locally on port 8480; Funnel proxies `/` on 443 to it).
   - `nanoclaw-host` — was at `/volume1/docker/nanoclaw-host`; being replaced by the
     rebuilt discordbot-host per CLAUDE.md. Fine to inspect for reference before
     removing/replacing.
@@ -86,9 +86,25 @@ dev environment:
   on this NAS from the public internet. It's a network-exposure mechanism only —
   unrelated to any service's own internal auth (e.g. it has nothing to do with the
   Woolworths login inside woolies-mcp).
-- staples-host will need its own Funnel endpoint on its own port (next free after
-  8480) and its own Claude.ai custom connector registration, separate from
-  woolies-mcp's.
+- staples-host needs its own Claude.ai custom connector registration, separate
+  from woolies-mcp's, but **not its own Funnel port** — confirmed live (a real
+  "couldn't reach this address" failure from Claude.ai's connector setup,
+  ruled out as a config/token issue first) that Tailscale Funnel's two
+  non-standard ports (8443, then 10000, tested in that order) are both
+  unreachable from Claude.ai's own connector-verification infrastructure,
+  even though both worked from every other network tested. **Only port 443
+  is reachable.** Since woolies-mcp already owns `/` on 443, staples-host is
+  exposed via path-based routing on the same port instead:
+  ```
+  tailscale funnel --bg --https=443 --set-path=/staples http://127.0.0.1:8481
+  ```
+  This is additive — confirmed live it doesn't touch woolies-mcp's own `/`
+  handler on 443 — and Tailscale strips the `/staples` prefix before
+  forwarding, so staples-host's own routes (`/mcp/:token`, `/healthz`) need
+  no changes to receive it. The resulting connector URL is
+  `https://<funnel-host>/staples/mcp/<token>` instead of a separate port.
+  If staples-host is ever redeployed to a fresh NAS, re-run the command
+  above rather than reaching for a new port — it will fail the same way.
 
 ## Repo / git
 
