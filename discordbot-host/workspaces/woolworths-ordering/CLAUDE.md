@@ -94,6 +94,12 @@ if you don't already know the right unit for an item going into this file,
 default to `"EACH"` unless the item is obviously sold by weight. Don't
 repeat the summary again in your reply; a short "let me know" is enough.
 
+Don't confuse this with `candidate-options.json` (see "Rendering the
+candidates" below) — that one is for the user's own ambiguous request
+needing a choice among several real candidates (numbered reactions, one per
+option); this one is for a cart change *you* initiated that the user hasn't
+asked for (a fixed, already-decided item list, plain ✅/❌ approval).
+
 ## Choosing a Product Among Multiple Matches
 
 When a request names an item generically (e.g. "add milk", "get some
@@ -141,7 +147,13 @@ anchored on. `suggest_alternatives` picks the anchor itself (`top_pick` for
 `"history"`, the matched cart item for `"cart"`, the top search result for
 `"search"`) — you don't need to call `get_best_value` separately for this
 flow at all; it's already in the response as `best_value` ({name,
-pricePerUnit}) whenever computable.
+pricePerUnit, sku}) whenever computable. **`best_value` always has a real
+`sku`** — never omit it from the reaction flow below for lack of one. The
+product it identifies must always be reachable somehow — via its own 💰
+reaction, or via ✅/a number if it turns out to be the same product as
+`top_pick`/an `other_candidates` entry — never silently dropped just
+because it happens to duplicate something else (see "Rendering the
+candidates" below for exactly which case applies and how).
 
 This also covers an item with **no existing staple record at all**, not
 just a tracked staple with no purchase history yet — `suggest_alternatives`
@@ -151,61 +163,92 @@ a separate, explicit `add_staple` call, not implied by asking about it once.
 
 ## Rendering the candidates
 
-Call `mcp__staples__get_cart` and check whether any candidate is already in
-it. Two cases, depending on `tier`:
+**Single-item requests only** (this whole section) — the Recipe/Multi-
+Ingredient flow below has its own, unrelated typed-reply mechanism and is
+untouched by any of this. Call `mcp__staples__get_cart` first and check
+whether any candidate is already in it, same as always. Then:
 
-**`tier: "history"` (✅ marker used):**
-- ✅ line, always first, one of two forms:
-  - `top_pick` not in cart: `✅ <name> — $<price>`
-  - `top_pick` already in cart: `✅ Already in cart: <name> — qty <N>`
-    (merge the two signals into one line rather than showing both
-    separately)
-- If a candidate *other than* `top_pick` is already in the cart, note that
-  next as its own plain-text line: `Already in cart: <name> — qty <N>` —
-  not as a numbered choice.
-- Then list the remaining `other_candidates` below that, each as a numbered
-  choice starting at 1 (number, name, size/pack, price). These numbers
-  never include `top_pick` — it's the ✅ line, not "#1".
-- If `best_value` was also returned, append it as its own line after the
-  numbered list — never in place of `top_pick` or any numbered candidate,
-  never reordering them: `💰 Best value: <name> — $<price>/<unit>`. Never
-  fabricate a per-unit price yourself.
-- **Selecting one:** an affirmative reply ("yes", "sounds good", "add it",
-  "sure", or similar) selects `top_pick`. A bare number (e.g. "2") selects
-  that position in the numbered list.
+**1. Each role gets exactly one reaction — never a number for `top_pick`
+or `best_value`.** An earlier version of this numbered every candidate
+uniformly, `top_pick` and `best_value` included — confirmed live as wrong
+(a real posted message numbered all 7 entries). The correct assignment:
+- `top_pick` → ✅ only, never a number. Only present for `tier: "history"`.
+- `other_candidates` → numbered 1️⃣ through however many there are, up to
+  5 (matching `suggest_alternatives`'s own cap), in the order returned.
+- `best_value` → 💰 only, never a number.
+- A duplicate sku is represented **once**, by whichever role already
+  covers it — never listed twice, and never left in `other_candidates`'
+  numbering once it's been pulled out into `top_pick` or `best_value`:
+  - **`best_value` duplicates an `other_candidates` entry** (a real,
+    observed case: asking about "milk" returned `best_value` as the exact
+    same product as what would otherwise have been numbered candidate 5,
+    Vitasoy) — remove it from `other_candidates` entirely (so the numbered
+    list has one fewer entry, renumbered contiguously) and represent it
+    only as `best_value`, marked 💰.
+  - **`best_value` duplicates `top_pick` itself** — real data for this
+    specific case hasn't been confirmed either way yet. Until it is,
+    default to the same principle as above (represented once, not twice):
+    omit `best_value` as a separate field, and note "(also best value)" on
+    the ✅ line's own text instead of attaching a second 💰 reaction for
+    the same product. Treat this as provisional — if you ever see this
+    case in practice, flag it rather than assuming this default is right.
+  - Otherwise (the common case, e.g. "chilli" or "bread" — `best_value` is
+    a genuinely different product from anything in `top_pick`/
+    `other_candidates`) — `best_value` stands on its own, marked 💰.
+- Already in cart: `Already in cart: <name> — qty <N>` on that entry's own
+  line, whichever role it has — it still gets its normal reaction (✅,
+  a number, or 💰), it just also carries this note. Merge with ✅ into one
+  line when `top_pick` itself is already in cart, as before.
 
-**`tier: "cart"` or `tier: "search"` (no `top_pick` at all — plain list, no
-marker):**
-- If any candidate is already in the cart, note it as plain text first:
-  `Already in cart: <name> — qty <N>` — not as a numbered choice.
-- List `other_candidates` (already capped at 5) as a numbered choice
-  starting at 1, in the order returned — don't re-rank or cherry-pick. No ✅
-  anywhere, no candidate singled out.
-- If `best_value` was returned, append it as its own line after the
-  numbered list, exactly like the `"history"` case: `💰 Best value: <name>
-  — $<price>/<unit>`. Never fabricate a per-unit price yourself. This does
-  **not** imply the anchor (or anything else in the list) is recommended —
-  it's a separate, factual statement, not a marker on any candidate.
-- **Selecting one:** a bare number selects that position in the list. There
-  is no "recommended" option to affirm into — every candidate is presented
-  with equal weight, so ask which one plainly rather than implying you'd
-  lead with any particular choice.
+**2. Write a file named `candidate-options.json`** in this folder
+(overwrite it if it already exists) with exactly this shape:
 
-Either way: wait for the user's next message before calling
-`mcp__staples__set_cart_quantity` — treat the reply as the selection, don't
-ask for the product name repeated back. Session-ID
-resumption means that follow-up arrives as a new cold call with this
-conversation's context already intact, so no `propose-action.json`/reaction
-flow is needed here — a request only counts as "already asked for" (see
-Confirming Cart Changes above) once a specific product has been chosen this
-way.
+```json
+{
+  "summary": "<Discord-ready text from step 1 — ✅/numbered/💰 lines as built above, following the Discord Formatting rules below>",
+  "top_pick": { "name": "...", "sku": "..." },
+  "other_candidates": [
+    { "name": "...", "sku": "..." }
+  ],
+  "best_value": { "name": "...", "sku": "..." }
+}
+```
 
-Only skip this whole flow when there's a single clearly obvious match (an
-exact name match, or genuinely only one real candidate) — don't ask the user
-to confirm a choice that isn't actually ambiguous. This exact-match check can
-short-circuit at any tier: if Tier 1 or Tier 2 already narrows to one obvious
-product, there's no need to fall through further or to ask the user to
-confirm it.
+`top_pick` and `best_value` are `null` when not present (no `tier:
+"history"` result, or best-value not computable, or — the still-unconfirmed
+case above — it duplicates `top_pick`). `other_candidates` is `[]` if
+empty, capped at 5 entries. A separate host-side process (not this
+session, not `mcp__staples__*`) reads this file after you finish, posts
+`summary` as the message, and attaches ✅ (if `top_pick` given), one
+numbered reaction per `other_candidates` entry, 💰 (if `best_value`
+given), and a ❌ decline reaction — you are not involved in the reaction
+itself and won't see the outcome unless the user brings it up in a later
+message. Whichever reaction gets used calls
+`mcp__staples__set_cart_quantity(sku, quantity: 1)` directly for that exact
+candidate — **always an exact quantity of 1, not an increment**, so a
+candidate already in the cart with a higher quantity would be reduced to 1
+by this path (a known simplification, not something to work around). Don't
+repeat the summary again in your own reply if you send one; a short "let me
+know" is enough, or nothing else at all.
+
+**3. If `other_candidates` somehow has more than 5 entries** (shouldn't
+happen — `suggest_alternatives` caps it at 5 itself), fall back to the old
+typed-reply flow instead of writing `candidate-options.json`: render the
+same content as a plain numbered reply, then wait for the user's next
+message and treat it as the selection (an affirmative reply like
+"yes"/"sounds good" selects `top_pick`, a bare number selects that
+position) before calling `mcp__staples__set_cart_quantity` yourself.
+Session-ID resumption means that follow-up arrives as a new cold call with
+this conversation's context already intact.
+
+Only skip this whole flow (reaction-based or typed-reply fallback) when
+there's a single clearly obvious match (an exact name match, or genuinely
+only one real candidate) — don't ask the user to confirm a choice that
+isn't actually ambiguous, and don't write `candidate-options.json` for it;
+just call `mcp__staples__set_cart_quantity` directly (see "Confirming Cart
+Changes You Initiate" above). This exact-match check can short-circuit at
+any tier: if Tier 1 or Tier 2 already narrows to one obvious product,
+there's no need to fall through further or to ask the user to confirm it.
 
 ## Recipe / Multi-Ingredient Shopping Lists
 
@@ -231,7 +274,8 @@ normally for that request.
 
 The single-item "Choosing a Product Among Multiple Matches" flow above is
 unaffected by any of this — it's still exactly how a single generic request
-("add cheese") gets resolved, with its own 5-candidate cap and ✅ marker.
+("add cheese") gets resolved, now via numbered reactions rather than a
+typed reply (see "Rendering the candidates" above).
 
 ## Discord Formatting
 

@@ -65,12 +65,17 @@ export function registerSuggestAlternatives(server: McpServer): void {
         "'cart', same no-recommendation rule.\n" +
         "- **'none'**: nothing resolved at all across all three tiers -- " +
         "say so plainly, don't invent an option.\n\n" +
-        "Also returns a `best_value` entry ({name, pricePerUnit}) when " +
+        "Also returns a `best_value` entry ({name, sku, pricePerUnit}) when " +
         "computable: the cheapest same-variety option across any brand, " +
         "anchored on whichever product is the real, known anchor for " +
         "whichever tier fired -- `top_pick` for 'history', the matched " +
         "**cart item itself** (not the narrowed search's own top result) " +
-        "for 'cart', or the top search result for 'search'. Shown for every " +
+        "for 'cart', or the top search result for 'search'. `sku` may be " +
+        "the same as an existing top_pick/other_candidates entry (a real " +
+        "product can legitimately be both), or a genuinely different " +
+        "product not otherwise listed -- either is normal, never drop " +
+        "best_value just because you already have a candidate list; treat " +
+        "it as its own selectable option regardless. Shown for every " +
         "tier, not just 'history' -- unlike the ✅ marker, best-value is " +
         "never a recommendation claim, just a factual \"cheapest in this " +
         "variety\" statement that holds regardless of which real product " +

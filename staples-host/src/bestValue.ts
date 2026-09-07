@@ -3,6 +3,7 @@ import { searchVariety, searchVarietyFirstPageOnly, type WooliesProductFull } fr
 
 export interface BestValueResult {
   name: string;
+  sku: string;
   pricePerUnit: string; // e.g. "$1.36/100g", already formatted for display
 }
 
@@ -37,6 +38,18 @@ function parseUnitPrice(unitPrice: string | null): { value: number; unit: string
  * or null if nothing usable is found -- never a guess. See CLAUDE.md's
  * suggest_alternatives entry: this is a best-effort suggestion, not an
  * authoritative cheapest-available claim.
+ *
+ * Returns the resolved product's own `sku` -- this was missing for a real
+ * stretch (the function already resolves the full `WooliesProductFull`
+ * internally via `searchVariety`/`searchVarietyFirstPageOnly`, `sku`
+ * included, it just wasn't surfaced) which meant `best_value` could never
+ * be turned into a selectable option anywhere it mattered: the
+ * candidate-reaction flow (see `discordbot-host/src/candidateReactions.ts`)
+ * needs a real sku for every reaction it attaches, and was silently
+ * dropping `best_value` from the numbered list whenever it happened not to
+ * duplicate an existing candidate's sku -- exactly backwards, since a
+ * distinct best-value product is the case that most needs its own
+ * reaction, not the one where dropping it is safe.
  *
  * `fastMode` swaps the underlying search for searchVarietyFirstPageOnly --
  * confirmed live this cuts the dominant per-ingredient cost in
@@ -93,6 +106,7 @@ export async function findBestValue(
   const cheapest = largest.reduce((best, c) => (c.value < best.value ? c : best));
   return {
     name: cheapest.product.name,
+    sku: cheapest.product.sku,
     pricePerUnit: cheapest.product.unitPrice ?? `$${cheapest.value.toFixed(2)}`,
   };
 }

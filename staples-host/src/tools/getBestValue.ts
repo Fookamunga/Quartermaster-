@@ -18,8 +18,8 @@ export function registerGetBestValue(server: McpServer): void {
         "flow (see the #woolworths-ordering workspace CLAUDE.md) can " +
         "compute it too, anchored on whichever product they're comparing " +
         "against -- the already-in-cart item for Tier 2, the broad " +
-        "search's own top result for Tier 3. Returns {name, pricePerUnit} " +
-        "or an empty object if nothing computable (the sku doesn't " +
+        "search's own top result for Tier 3. Returns {name, sku, " +
+        "pricePerUnit} or an empty object if nothing computable (the sku doesn't " +
         "resolve, it has no parseable unit price, the variety search finds " +
         "nothing, or nothing survives the exclusion heuristic) -- never a " +
         "guess. Same best-effort caveat as Tier 1's version: a best-effort " +

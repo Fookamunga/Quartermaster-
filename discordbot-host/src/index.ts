@@ -3,8 +3,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Events, type Message } from "discord.js";
 import { isPersistentWorkerEnabled, runAgent } from "./agentDispatch.js";
+import { handleCandidateReaction, postAndTrackCandidates } from "./candidateReactions.js";
 import { WARM_SESSION_REFRESH_INTERVAL_MS, WORKSPACES_DIR } from "./config.js";
-import { ensureWorkspaceDirs, takeProposedAction } from "./containerRunner.js";
+import { ensureWorkspaceDirs, takeCandidateOptions, takeProposedAction } from "./containerRunner.js";
 import { connectDiscord, getChannelKeyForId, sendChannelMessage } from "./discord.js";
 import { logger } from "./logger.js";
 import { startNeverTrackedSentry } from "./neverTrackedSentry.js";
@@ -204,6 +205,17 @@ async function handleMessage(message: Message): Promise<void> {
         logger.error("Failed to post proposed action", { err: String(err) }),
       );
     }
+
+    const candidateOptions = takeCandidateOptions(channelKey);
+    if (candidateOptions) {
+      await postAndTrackCandidates(
+        message.channelId,
+        candidateOptions.summary,
+        candidateOptions.top_pick,
+        candidateOptions.other_candidates,
+        candidateOptions.best_value,
+      ).catch((err) => logger.error("Failed to post candidate options", { err: String(err) }));
+    }
   });
 }
 
@@ -260,6 +272,9 @@ async function main(): Promise<void> {
   client.on(Events.MessageReactionAdd, (reaction, user) => {
     handlePendingActionReaction(reaction, user).catch((err) =>
       logger.error("Reaction handling failed", { err: String(err) }),
+    );
+    handleCandidateReaction(reaction, user).catch((err) =>
+      logger.error("Candidate reaction handling failed", { err: String(err) }),
     );
   });
 

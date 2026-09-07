@@ -20,13 +20,21 @@ import {
   WORKSPACES_DIR,
 } from "./config.js";
 import { logger } from "./logger.js";
-import type { ChannelKey, ContainerInput, ContainerOutput, ProposeAction, RemoteMcpServerConfig } from "./types.js";
+import type {
+  CandidateOptions,
+  ChannelKey,
+  ContainerInput,
+  ContainerOutput,
+  ProposeAction,
+  RemoteMcpServerConfig,
+} from "./types.js";
 
 // Sentinel markers for robust stdout parsing (must match container/agent-runner).
 const OUTPUT_START_MARKER = "---DISCORDBOT_OUTPUT_START---";
 const OUTPUT_END_MARKER = "---DISCORDBOT_OUTPUT_END---";
 
 const PROPOSE_ACTION_FILENAME = "propose-action.json";
+const CANDIDATE_OPTIONS_FILENAME = "candidate-options.json";
 
 interface VolumeMount {
   hostPath: string;
@@ -118,6 +126,33 @@ export function takeProposedAction(channelKey: ChannelKey): ProposeAction | null
     return JSON.parse(raw) as ProposeAction;
   } catch (err) {
     logger.error("Failed to parse propose-action.json", { channelKey, err: String(err) });
+    return null;
+  } finally {
+    try {
+      unlinkSync(filePath);
+    } catch {
+      // already gone, fine
+    }
+  }
+}
+
+/**
+ * After a cold run exits, check the channel's workspace for a
+ * candidate-options.json the agent may have written instead of a typed-
+ * reply-driven candidate list -- the single-item disambiguation flow's own
+ * numbered-reaction mechanism (see candidateReactions.ts), scoped to single-
+ * item requests only. Same consume-whether-or-not-it-parses pattern as
+ * takeProposedAction, for the same reason (a malformed file can't wedge
+ * every future run in this channel).
+ */
+export function takeCandidateOptions(channelKey: ChannelKey): CandidateOptions | null {
+  const filePath = path.join(WORKSPACES_DIR, channelKey, CANDIDATE_OPTIONS_FILENAME);
+  if (!existsSync(filePath)) return null;
+  try {
+    const raw = readFileSync(filePath, "utf8");
+    return JSON.parse(raw) as CandidateOptions;
+  } catch (err) {
+    logger.error("Failed to parse candidate-options.json", { channelKey, err: String(err) });
     return null;
   } finally {
     try {
@@ -229,6 +264,8 @@ export function ensureWorkspaceDirs(): void {
 // run_staples_order_now) -- lets a maintainer force-clean a stuck workspace
 // without reaching for `rm -rf` by hand.
 export function clearWorkspaceState(channelKey: ChannelKey): void {
-  const filePath = path.join(WORKSPACES_DIR, channelKey, PROPOSE_ACTION_FILENAME);
-  if (existsSync(filePath)) rmSync(filePath);
+  for (const filename of [PROPOSE_ACTION_FILENAME, CANDIDATE_OPTIONS_FILENAME]) {
+    const filePath = path.join(WORKSPACES_DIR, channelKey, filename);
+    if (existsSync(filePath)) rmSync(filePath);
+  }
 }
