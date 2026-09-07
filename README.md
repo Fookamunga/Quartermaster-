@@ -29,6 +29,32 @@ keys, tokens, the Discord webhook URL) before it'll run — see
 [`discordbot-host/.env.example`](discordbot-host/.env.example) for the
 authoritative list of what each one needs.
 
+## Setup order
+
+Deploy and connect these in order:
+
+1. **Deploy woolies-mcp first.** It's a hard prerequisite, not just a
+   recommended order — staples-host depends on it being up and signed in to
+   a Woolworths account before it can do anything useful at all.
+2. **Add the woolies-mcp connector to Claude (mobile, desktop, or claude.ai)
+   and use it directly** to confirm woolies-mcp itself is working correctly
+   — signed in, returning real search results, able to write to the cart —
+   before moving on to staples-host. This is a one-time verification step,
+   not the intended long-term setup.
+3. **Once staples-host is deployed, create and add the Quartermaster
+   connector** in Claude.
+4. **Disable or remove the woolies-mcp connector from Claude.** This step
+   isn't optional. Having them both on will mean Quartermaster's
+   feature set will not be used in chat. You can still add items etc but
+   won't have recommended based on history or cheapest options.
+
+   The Discord bot side of this is already structurally
+   enforced in code — woolies-mcp is never registered as a tool source for
+   any Discord-side agent session — but Claude's own connector list on
+   claude.ai is account-level configuration outside this codebase, so it's
+   on whoever sets this up to make sure only the Quartermaster connector
+   stays active once Quartermaster is live.
+
 ## Managing staples
 
 Fully conversational, no external doc or sync required — just talk to either
