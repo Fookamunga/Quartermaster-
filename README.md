@@ -84,8 +84,11 @@ nothing marked, since there's no real signal to recommend one over another:
 
 ![Alternatives from a plain search, no purchase history to rank from](docs/alternatives-no-history.png)
 
-Either way, it always includes a best-value pick — the cheapest price-per-unit
-option of that type — regardless of which path found the recommendation.
+Either way, asking about one item always includes a best-value pick — the
+cheapest price-per-unit option of that type — regardless of which path found
+the recommendation. Asking for a whole recipe/ingredient list at once skips
+best-value (computing it for every ingredient was too slow to do reliably) —
+ask about a specific item on its own if you want its cheapest option.
 
 These suggestions are only as good as your purchase history, so recording it
 matters. Until Woolworths fixes their order-history API (at which point this

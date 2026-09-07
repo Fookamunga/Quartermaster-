@@ -28,13 +28,14 @@ export function registerBuildShoppingList(server: McpServer): void {
         "- `alternatives`: up to 3, each with its own `number` -- unique " +
         "across this ENTIRE response, not restarted per ingredient. Render " +
         "each exactly as numbered; never renumber or reorder them yourself.\n" +
-        "- `best_value`: `{name, pricePerUnit}` or null -- the cheapest " +
-        "same-variety option, a factual statement, not a marker on any " +
-        "candidate. Render it whenever present, same as the single-item " +
-        "flow's 💰 line. Never fabricate one when null.\n" +
         "- `all_alternatives`: the same list, untrimmed (up to 5) -- only " +
         "used for the follow-up described below, never rendered as part of " +
         "the initial reply.\n\n" +
+        "No best-value figure here, unlike the single-item flow -- it was " +
+        "the dominant per-ingredient cost and this tool is time-constrained " +
+        "in a way that flow isn't (see below). If asked which option is " +
+        "cheapest for a specific ingredient, call suggest_alternatives or " +
+        "get_best_value for that one item instead of guessing.\n\n" +
         "How to interpret a reply: when the user replies with a list of " +
         "numbers (e.g. '1 4 6'), match each number against the numbers this " +
         "tool assigned in its most recent response in this conversation, and " +
