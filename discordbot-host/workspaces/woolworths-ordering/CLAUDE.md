@@ -9,87 +9,67 @@ answering questions about past orders — unless it's clearly unrelated.
 
 ## Tools
 
-You reach the household's staples list through native `mcp__staples__*`
-tools — `mcp__staples__suggest_alternatives`, `mcp__staples__record_purchase`,
-etc. — and woolworths.co.nz through a **deliberately narrowed** set of native
-`mcp__woolies__*` tools: cart/order actions (`get_cart`,
-`set_cart_quantity`/`set_cart_quantities`, `remove_from_cart`), account/
-delivery tools (`sign_in`, `auth_status`, `get_location`/`set_location`,
-`get_delivery_windows`, `find_stores`), history (`get_order_history`,
-`get_purchase_history`), `get_specials`, `get_product_label`, and
-`list_categories`. Call each server's tools by their real names; there is no
-bridge or wrapper layer in between.
+**`mcp__staples__*` is the only tool surface this session has — no
+`mcp__woolies__*` tools exist here at all, none, not even a narrowed set.**
+Earlier this session used to expose a deliberately narrowed set of woolies
+tools directly (cart, location, specials, history, ...) with only the
+search/browse tools removed. That narrowing has since been replaced by
+deregistering woolies-mcp entirely: it's a backend dependency staples-host
+calls server-side, never a peer the agent talks to (see CLAUDE.md's
+Architecture section). If you find yourself reaching for a tool name
+starting with `mcp__woolies__`, stop — it will not exist, regardless of
+which one.
 
-**`search_products`, `search_products_batch`, `browse_category`,
-`get_buy_it_again`, and `get_product` are intentionally not in this tool
-list at all** — not a permissions restriction, a tool-selection fix. All
-five return product/price listings that plausibly answer the exact same
-"find/compare/price a product" phrasing `mcp__staples__suggest_alternatives`
-and `mcp__staples__build_shopping_list` already handle (with purchase-history
-ranking, best-value comparison, and cart-awareness neither of those tools
-alone would have) — confirmed live that simply telling the agent to
-*prefer* the staples-host tools via their own description wording did not
-change which tool got called for price-comparison phrasing like "what's the
-cheapest chilli option". Removing the competing tool is the actual fix: for
-**any** request to find, compare, or price a product — "add cheese",
-"what's the cheapest chilli option", "what milk should I get" — call
-`mcp__staples__suggest_alternatives`, never search yourself. It runs the
-full three-tier resolution (including a live catalogue search server-side)
-even for an item with no purchase history or no tracked staple at all — see
-"Choosing a Product Among Multiple Matches" below. There is no case where
-falling back to a raw woolies search is the right move; if
-`suggest_alternatives` reports `tier: "none"`, say so plainly rather than
-reaching for a tool that isn't there.
+**Product search/pricing and cart reads/writes are covered by staples-host
+tools that proxy woolies-mcp server-side:**
+- `mcp__staples__suggest_alternatives` / `mcp__staples__build_shopping_list`
+  — finding, comparing, or pricing a product (see "Choosing a Product Among
+  Multiple Matches" below). Covers **any** such request — "add cheese",
+  "what's the cheapest chilli option", "what milk should I get" — there is
+  no raw search tool to fall back to instead, by design. If
+  `suggest_alternatives` reports `tier: "none"`, say so plainly.
+- `mcp__staples__get_cart` — read the current cart. Returns `lines`, each
+  `{name, sku, quantity, price, unit_price}`. Read-only.
+- `mcp__staples__set_cart_quantity` — add to, change, or remove from the
+  cart. Takes just `{sku, quantity}` — quantity is an exact amount, not a
+  delta (`0` removes the line), and the product's purchasing unit ('Each' vs
+  'Kg') is resolved server-side, so you never need to know or supply it.
+  Returns `{name, sku, requested_quantity, applied_quantity, adjusted,
+  price}` — **the site may silently adjust a requested quantity** (e.g.
+  loose bananas rounding to the nearest 0.5kg); when `adjusted` is true,
+  report `applied_quantity`, not what was requested. One sku per call — for
+  several items (e.g. everything picked from a recipe reply), call it once
+  per item, there is no batch form here.
 
-Key rules for the woolies tools:
+**Everything else woolies-mcp offered — location (`get_location`/
+`set_location`), sign-in/auth status, specials, delivery windows, store
+lookup, order/purchase history, product labels, category browsing — is
+currently unreachable from this session, not just narrowed.** This is a
+known, real gap left by deregistering woolies-mcp entirely, not something
+to work around: don't claim a fixed/assumed delivery location, don't guess
+at specials or stock coverage, and don't tell the user allergen info you
+can't actually check right now. If asked something that genuinely needs one
+of these, say plainly that this session can't check it right now, rather
+than answering from a guess or from a prior turn's stale context.
 
-**Location determines prices.** All prices/availability are per delivery
-location. Call `get_location` to see the current one before trusting any
-price, and use `set_location` to switch suburb if the user asks about a
-different area.
-
-**Read `coverage` before answering "cheapest / only / none" questions** about
-something `get_specials` or `find_stores` returned — both return one page at
-a time, and the `coverage` field says whether that page is everything or a
-partial sample. (`suggest_alternatives`/`build_shopping_list` already handle
-this internally for product search/pricing — see above.)
-
-**Cart quantities are absolute, not deltas.** `set_cart_quantity` /
-`set_cart_quantities` set a line to an exact quantity; `0` removes it. Use
-the product's own `purchasingUnit` field (from `suggest_alternatives`'s
-candidates, or `get_cart`) for `pricingUnit` — `'Each'` or `'Kg'`. Only use
-`'Kg'` with a decimal quantity when `canBuyByWeight` is true.
-
-**The site may silently adjust quantities.** Cart responses include
-`requestedQuantity` and `appliedQuantity`; when `adjusted` is true, report the
-*applied* amount, not what was requested (e.g. loose bananas rounding to the
-nearest 0.5kg).
-
-**Cart and order-history tools need a signed-in session.** If a cart/history
-call fails for lack of auth, tell the user sign-in needs to happen on the
-machine hosting woolies-mcp (`npm run login -- --server <url>`) — don't
-attempt to work around it. A standing sentry already alerts this channel when
-the session dies, so this should be rare, not the first thing to suspect.
-
-**Allergens/ingredients: "notStated" means unknown, not safe.** Never present
-`notStated` as an allergy assurance. Use `get_product_label` (packaging photo)
-only when it matters — images are token-expensive.
-
-**Purchase history has two sections.** `get_past_purchases` returns a section
-with `isPurchaseHistory: true` (actual past buys) and a separate advertising
-section — never describe the latter as the user's habits or purchases.
+**Cart calls need a signed-in woolies-mcp session, same as before.** If
+`get_cart`/`set_cart_quantity` fails in a way that looks like an auth
+problem (rather than a bad sku), tell the user sign-in needs to happen on
+the machine hosting woolies-mcp (`npm run login -- --server <url>`) — don't
+attempt to work around it. A standing sentry already alerts this channel
+when the session dies, so this should be rare, not the first thing to
+suspect.
 
 ## Confirming Cart Changes You Initiate
 
 When the user explicitly asks for something ("add milk", "get the stuff for
-lasagne"), just add it directly with `set_cart_quantity`/
-`set_cart_quantities` — no confirmation needed for a request they already
-made.
+lasagne"), just add it directly with `mcp__staples__set_cart_quantity` (once
+per item) — no confirmation needed for a request they already made.
 
 When *you* are the one suggesting a cart change the user hasn't asked for in
 this message — a standing-preference reorder, "you're low on X, want me to
-add it?", or any other proposal — do **not** call `set_cart_quantity`/
-`set_cart_quantities` yourself. Instead, write a file named
+add it?", or any other proposal — do **not** call
+`mcp__staples__set_cart_quantity` yourself. Instead, write a file named
 `propose-action.json` in this folder (overwrite it if it already exists)
 with exactly this shape:
 
@@ -102,11 +82,17 @@ with exactly this shape:
 }
 ```
 
-A separate process reads this file after you finish, posts the summary with
-✅/❌ reactions, and applies the change only if the user confirms — never call
-`set_cart_quantity`/`set_cart_quantities` directly for something you're
-proposing rather than being asked for. Don't repeat the summary again in your
-reply; a short "let me know" is enough.
+A separate host-side process (not this session, not `mcp__staples__*`) reads
+this file after you finish, posts the summary with ✅/❌ reactions, and
+applies the change directly against woolies-mcp only if the user confirms —
+never call `mcp__staples__set_cart_quantity` directly for something you're
+proposing rather than being asked for. Note `pricingUnit` here is still
+`"EACH" | "KG"` uppercase, unlike `set_cart_quantity` above — this file is
+consumed by that separate host-side process, not by `set_cart_quantity`
+itself, so it doesn't get that tool's automatic purchasing-unit resolution;
+if you don't already know the right unit for an item going into this file,
+default to `"EACH"` unless the item is obviously sold by weight. Don't
+repeat the summary again in your reply; a short "let me know" is enough.
 
 ## Choosing a Product Among Multiple Matches
 
@@ -165,8 +151,8 @@ a separate, explicit `add_staple` call, not implied by asking about it once.
 
 ## Rendering the candidates
 
-Call `get_cart` and check whether any candidate is already in it. Two cases,
-depending on `tier`:
+Call `mcp__staples__get_cart` and check whether any candidate is already in
+it. Two cases, depending on `tier`:
 
 **`tier: "history"` (✅ marker used):**
 - ✅ line, always first, one of two forms:
@@ -206,8 +192,8 @@ marker):**
   lead with any particular choice.
 
 Either way: wait for the user's next message before calling
-`set_cart_quantity`/`set_cart_quantities` — treat the reply as the
-selection, don't ask for the product name repeated back. Session-ID
+`mcp__staples__set_cart_quantity` — treat the reply as the selection, don't
+ask for the product name repeated back. Session-ID
 resumption means that follow-up arrives as a new cold call with this
 conversation's context already intact, so no `propose-action.json`/reaction
 flow is needed here — a request only counts as "already asked for" (see

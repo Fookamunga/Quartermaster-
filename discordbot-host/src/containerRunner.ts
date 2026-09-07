@@ -17,7 +17,6 @@ import {
   DATA_DIR,
   PROJECT_ROOT,
   STAPLES_HOST_URL,
-  WOOLIES_MCP_URL,
   WORKSPACES_DIR,
 } from "./config.js";
 import { logger } from "./logger.js";
@@ -40,19 +39,19 @@ function ensureWritableDir(dir: string): void {
   chmodSync(dir, 0o777);
 }
 
-// In practice only ever called for woolworths-ordering -- order-import is a
-// pure relay (src/orderImportPhotos.ts, src/orderImportText.ts) and never
-// reaches a cold session at all, so this branch stays for type-completeness
-// against ChannelKey rather than because order-import currently uses it.
-// See CLAUDE.md.
+// Staples-host is the only MCP server ever registered for an agent session
+// this codebase constructs, cold or warm, on any channel -- woolies-mcp is
+// never handed to an LLM session directly. See CLAUDE.md's Architecture
+// section: staples-host is a backend dependency of an agent session, not a
+// peer of it, and calls woolies-mcp server-side itself (tieredSearch.ts,
+// alternatives.ts, bestValue.ts) whenever it needs product/cart data.
+//
+// channelKey is unused now that no channel gets a different server set, but
+// kept in the signature -- callers already pass it, and this stays the one
+// place that decides an agent session's MCP surface, so a future
+// channel-specific server (if one is ever needed) has an obvious home.
 function mcpServersFor(channelKey: ChannelKey): Record<string, RemoteMcpServerConfig> {
-  const staples: Record<string, RemoteMcpServerConfig> = {
-    staples: { url: STAPLES_HOST_URL },
-  };
-  if (channelKey === "woolworths-ordering") {
-    return { woolies: { url: WOOLIES_MCP_URL }, ...staples };
-  }
-  return staples;
+  return { staples: { url: STAPLES_HOST_URL } };
 }
 
 function buildVolumeMounts(channelKey: ChannelKey): VolumeMount[] {

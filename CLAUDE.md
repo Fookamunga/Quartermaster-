@@ -422,6 +422,49 @@ queries. Only staples-host touches this volume.
   consistent with how a substitution already resolves to the product actually
   received elsewhere in this flow. Defaults to 1 when no quantity is
   determinable from the source.
+- `get_cart()` — read the current Woolworths cart, via woolies-mcp's own
+  `get_cart` server-side (`wooliesClient.ts`'s `getCart()`, already used
+  internally by `suggest_alternatives`/`build_shopping_list`'s Tier 2, now
+  also exposed directly). Returns `lines`, each `{name, sku, quantity,
+  price, unit_price}` (the latter two omitted, not guessed, if the
+  underlying line carries no parseable one). Exists so an agent session —
+  which never has woolies-mcp registered as its own MCP server (see
+  Architecture below) — can still read cart contents at all, for the
+  already-in-cart check in the `#woolworths-ordering` workspace CLAUDE.md's
+  rendering rules and for a direct "what's in my cart" question. Read-only.
+- `set_cart_quantity(sku, quantity)` — the only way an agent session can
+  add to, change, or remove from the cart, for the same reason `get_cart`
+  exists. Sets one line to an exact quantity (`0` removes it), mirroring
+  woolies-mcp's own `set_cart_quantity` semantics exactly — the difference
+  is what the caller doesn't need to know: woolies-mcp's real tool requires
+  a `pricingUnit` (`'EACH'` | `'KG'`) derived from the product's own
+  `purchasingUnit` field, a mechanic the agent used to have to handle itself
+  back when it called woolies-mcp directly. This tool resolves it
+  server-side instead (`getProductFull(sku)` → `purchasingUnit` →
+  uppercased to `pricingUnit`) before calling woolies-mcp's
+  `set_cart_quantity`, so the caller only ever supplies `sku` and
+  `quantity`. Returns `{name, sku, requested_quantity, applied_quantity,
+  adjusted, line_in_cart, price}` — `requested_quantity`/`applied_quantity`
+  differ, with `adjusted: true`, whenever Woolworths' own site logic
+  silently rounds a quantity (e.g. loose produce to the nearest 0.5kg); the
+  caller must report the applied amount in that case, not what it asked
+  for. `line_in_cart` is `false` after a quantity-0 removal (expected, not
+  a failure) and `true` otherwise. **`name`/`price` come from this tool's
+  own product lookup, not from woolies-mcp's cart-write response** —
+  confirmed live (a direct diagnostic call against the real API, once the
+  first version of this tool's cart write appeared to silently fail on
+  every call, including successful ones) that the real `set_cart_quantity`
+  response carries no product name or price at all, only
+  `sku`/`variantKey`, the quantity/adjustment fields above, `lineInCart`,
+  and checkout-readiness fields this tool doesn't surface
+  (`cartTotalQuantity`, `cartLineCount`, `checkoutBlocked`, `blockers`).
+  The first version treated the *absence* of a `name` field as a failure
+  signal and returned an error on every call — the cart write had actually
+  succeeded each time; the parsing was just wrong. One sku per call — no
+  batch form, unlike woolies-mcp's own `set_cart_quantities` (still used
+  as-is by discordbot-host's own host-side pending-actions executor,
+  `pendingActions.ts` — an unrelated, pre-existing direct call that was
+  never routed through an agent session and needed no change here).
 **Replenishment logic:** new items start `seeded`, `status = not_due` until ≥2
 purchase events exist. What `replenishment_interval_days` actually means, and
 how status is computed from it, now depends on `interval_confidence`:
@@ -673,60 +716,108 @@ guild's channels), never creates either.
   `/var/run/docker.sock`) to run one cold Claude Code invocation — in practice
   only ever for `#woolworths-ordering`; `#order-import` is a pure relay and
   never reaches a cold session at all, see that section
-- Passing woolies-mcp and staples-host into each cold session's own MCP config
-  as remote `type: "http"` servers (fine in cold mode — this is not the bug
-  path), so the agent calls them as native `mcp__woolies__*` / `mcp__staples__*`
-  tools — no IPC bridge in between.
-  - **`mcp__woolies__*` gets an explicit `disallowedTools` deny list**
-    (`WOOLIES_DISALLOWED_TOOLS` in `container/agent-runner/src/index.ts`,
-    mirrored by hand in `src/warmSession.ts` since the two are separate
-    builds) covering `search_products`, `search_products_batch`,
-    `browse_category`, `get_buy_it_again`, and `get_product`. Real, confirmed
-    problem this fixes: with both servers connected, the agent would
-    sometimes call woolies-mcp's `search_products` directly instead of
-    staples-host's `suggest_alternatives`/`build_shopping_list` for
-    "find/compare/price a product" requests, bypassing all purchase-history
-    ranking, best-value comparison, and cart-awareness those tools exist to
-    provide — most reliably reproduced with price-comparison phrasing
-    ("what's the cheapest chilli option right now"). **Two rounds of
-    strengthening `suggest_alternatives`'s own tool-description wording to
-    say "prefer this over search_products" made no measurable difference**
-    — confirmed live, re-testing the identical failing prompt against the
-    rebuilt description each time — the model was pattern-matching "price
-    comparison across a category" to a search task before it ever weighed
-    which tool's description fit better.
-    - **First structural attempt (an `allowedTools` narrowing instead of a
-      deny list) also had zero effect, and this was a second real,
-      confirmed-live dead end, not a hypothetical to avoid** — this runner
-      sets `permissionMode: "bypassPermissions"` (needed so the cold session
-      never blocks on an interactive approval prompt), and the bundled
-      Claude Agent SDK explicitly documents that bypass mode auto-approves
-      every tool call and *ignores allow rules from `allowedTools`*; only
-      deny rules from `disallowedTools` still apply under that mode.
-      Confirmed by re-testing the identical failing prompt against the
-      rebuilt `allowedTools`-narrowed image: `search_products` was still
-      reachable, byte-identical bypass. Switching the same list to
-      `disallowedTools` fixed it — confirmed via the session transcript
-      (not just the reply text): the agent's first instinct was still to
-      call `mcp__woolies__search_products` directly, but it now comes back
-      `is_error: true`, `"Error: No such tool available:
-      mcp__woolies__search_products"`, and the agent falls back to
-      `mcp__staples__suggest_alternatives` correctly.
-    - This only works because Tier 2/3 of the single-item disambiguation
-      flow (previously the agent's own job — see the workspace CLAUDE.md's
-      now-superseded prose) moved server-side into `suggest_alternatives`
-      itself at the same time (see that tool's entry above and
-      `tieredSearch.ts`) — without that move, the agent would have had no
-      way to do Tier 2/3 at all once `search_products` became unreachable.
-    - `get_product_label` and `list_categories` stay reachable alongside the
-      cart/order/location/auth tools — none of the excluded-vs-kept split is
-      about permissions, only about which tools return a product/price
-      listing that competes with a staples-host tool for the same phrasing
-      (the excluded five do; nothing kept does).
-    - staples-host itself is unaffected by any of this — it has always been
-      the sole caller of woolies-mcp's `search_products`/`get_cart`/
-      `get_product` (see Ownership boundaries above), calling them
-      server-side, never through the agent's own tool list.
+- **Passing staples-host — and only staples-host — into every cold session's
+  MCP config**, as a remote `type: "http"` server, so the agent calls it as
+  native `mcp__staples__*` tools — no IPC bridge in between.
+  - **Standing architecture rule: any agent session this codebase builds
+    (cold, in `container/agent-runner/src/index.ts`'s `buildMcpServers()`
+    fed by `containerRunner.ts`'s `mcpServersFor()`; warm, in
+    `src/warmSession.ts`'s `warmMcpServers()`) registers staples-host as its
+    only MCP server, on every channel. woolies-mcp is never handed to an LLM
+    session directly, full stop — it's a backend dependency staples-host
+    itself calls server-side (`tieredSearch.ts`, `alternatives.ts`,
+    `bestValue.ts`, and now `get_cart`/`set_cart_quantity` too — see
+    Ownership boundaries above) whenever it needs product data or cart
+    reads/writes, not a peer service the agent talks to. This covers the
+    full product+cart surface area an agent session needs, not just
+    search/pricing — see the out-of-scope note below for what's still
+    missing (location, sign-in, specials, delivery, stores, history,
+    labels, categories).
+  - **This replaced an earlier, narrower fix, not a hypothetical
+    alternative — worth knowing the history since the same bug shape can
+    recur if this rule is ever weakened.** The real, confirmed problem: with
+    woolies-mcp *also* registered alongside staples-host, the agent would
+    sometimes call its `search_products` directly instead of staples-host's
+    `suggest_alternatives`/`build_shopping_list` for "find/compare/price a
+    product" requests, bypassing all purchase-history ranking, best-value
+    comparison, and cart-awareness those tools exist to provide — most
+    reliably reproduced with price-comparison phrasing ("what's the cheapest
+    chilli option right now"). Three narrower fixes were tried and confirmed
+    live, in order, before landing on "don't register woolies-mcp at all":
+    1. Strengthening `suggest_alternatives`'s own tool-description wording
+       to say "prefer this over search_products" — made no measurable
+       difference across two rounds, re-testing the identical failing
+       prompt against the rebuilt description each time. The model was
+       pattern-matching "price comparison across a category" to a search
+       task before it ever weighed which tool's description fit better.
+    2. An `allowedTools` narrowing (a curated allowlist excluding
+       `search_products` and four other woolies tools) — also zero effect,
+       confirmed by re-testing the identical failing prompt against the
+       rebuilt image. Root cause: the cold/warm runners set
+       `permissionMode: "bypassPermissions"` (needed so a session never
+       blocks on an interactive approval prompt), and the bundled Claude
+       Agent SDK explicitly documents that bypass mode auto-approves every
+       tool call and *ignores allow rules from `allowedTools`* — only deny
+       rules from `disallowedTools` still apply under that mode.
+    3. A `WOOLIES_DISALLOWED_TOOLS` `disallowedTools` deny list (the same
+       five tools) — this one worked, confirmed via the session transcript
+       (not just the reply text): the agent's first instinct was still to
+       call `mcp__woolies__search_products` directly, but it came back
+       `is_error: true`, `"Error: No such tool available:
+       mcp__woolies__search_products"`, and the agent fell back to
+       `mcp__staples__suggest_alternatives` correctly. **Deliberately
+       replaced anyway, not left in place alongside the real fix** — it was
+       Discord-container-specific config protecting only this codebase's
+       own front end, and did nothing for Claude mobile/desktop, which
+       reaches woolies-mcp through its own separate connector outside this
+       codebase entirely. Not registering woolies-mcp for an agent session
+       at all is the fix that actually generalizes: a tool that was never
+       handed to a session can't be bypassed into regardless of which front
+       end or client is asking.
+  - **Confirmed live (not just by reasoning about the code) that removing
+    the registration is structurally stronger than the deny list ever
+    was**: re-running the same two repro prompts, the session transcript's
+    own `ToolSearch` calls for a woolies tool (`mcp__woolies__get_cart`,
+    `"woolies cart"`, `"mcp__woolies"`) came back with zero matches every
+    time — the tool isn't merely blocked at call time, it doesn't exist
+    anywhere in the session's tool registry for the model to find in the
+    first place.
+  - This only works because Tier 2/3 of the single-item disambiguation flow
+    (previously the agent's own job, calling woolies-mcp directly — see the
+    workspace CLAUDE.md's now-superseded prose) already moved server-side
+    into `suggest_alternatives` itself in the prior round (see that tool's
+    entry above and `tieredSearch.ts`) — without that move, the agent would
+    have had no way to do Tier 2/3 at all once it lost woolies-mcp access
+    entirely.
+  - **Cart-write restored via two new staples-host tools, `get_cart()` and
+    `set_cart_quantity(sku, quantity)`** (see staples-host's MCP tools
+    section above) — deregistering woolies-mcp had silently killed the
+    "add milk" flow along with the search bypass it was meant to fix,
+    since `set_cart_quantity(ies)`/`get_cart`/the already-in-cart check
+    were only ever woolies-mcp tools, with no staples-host equivalent at
+    the time. Both new tools follow the same server-side-only pattern as
+    `tieredSearch.ts`: staples-host calls woolies-mcp directly, the agent
+    calls staples-host. `set_cart_quantity` additionally resolves the
+    product's purchasing unit server-side (via `getProductFull`) so the
+    agent never needs woolies-mcp's own `pricingUnit` mechanic explained to
+    it at all — a simplification over what the agent had to know when it
+    called woolies-mcp directly. The workspace CLAUDE.md's cart-write flow
+    and Tier 2/3 "already in cart" check were updated to call these instead
+    of the old direct woolies tool names.
+  - **Still a known, out-of-scope gap, not yet resolved**: every other
+    woolies-mcp tool — `remove_from_cart` (redundant with
+    `set_cart_quantity(sku, 0)`, so not proxied), `sign_in`,
+    `get_location`/`set_location`, `get_delivery_windows`, `find_stores`,
+    `get_specials`, `get_order_history`, `get_purchase_history`,
+    `auth_status`, `get_product_label`, `list_categories` — remains
+    unreachable from any agent session, with no staples-host equivalent.
+    The workspace CLAUDE.md documents this plainly (its "Tools" section)
+    rather than leaving the agent to assume it can still check a delivery
+    location, specials, or order history it no longer has access to.
+    Whoever picks this up next should follow the same pattern as
+    `get_cart`/`set_cart_quantity`: a thin staples-host tool per
+    capability actually needed, calling woolies-mcp server-side, not a
+    blanket re-registration of woolies-mcp for the agent.
 - Reaction-confirm mechanism, entirely in the persistent process, independent of
   any individual cold call: post ✅/❌ (or 👍/👎) on proposed actions; a
   pending-actions store (JSON/SQLite, keyed by Discord message ID, supports
@@ -734,8 +825,12 @@ guild's channels), never creates either.
   clear on ❌. Requires `GuildMessageReactions` intent and
   `Partials.Message/Reaction/Channel` so reactions survive restarts.
   - **How a proposal is initiated**, decided during this build: a direct
-    request ("add milk") gets executed immediately by the agent via native
-    woolies tools — no proposal needed. When the agent decides to *propose*
+    request ("add milk") gets executed immediately by the agent via
+    `mcp__staples__set_cart_quantity` (originally a direct woolies-mcp tool
+    call, before woolies-mcp was deregistered from agent sessions entirely
+    and this staples-host proxy took its place — see staples-host's MCP
+    tools section above) — no proposal needed. When the agent decides to
+    *propose*
     rather than act (a nudge it initiated, not something asked for this
     message), it writes a `propose-action.json` file to its mounted workspace
     (`{ summary: string, items: [{ name, sku, quantity, pricingUnit }] }`)

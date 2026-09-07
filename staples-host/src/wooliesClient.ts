@@ -2,12 +2,18 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { WOOLIES_MCP_URL } from "./config.js";
 
-// staples-host's one narrow, read-only exception to never calling woolies-mcp
-// itself (see CLAUDE.md's Ownership boundaries) -- used only by
-// suggest_alternatives to re-resolve a historical product_name to a live
-// product via woolies-mcp's own search_products tool. No cart access, no
-// auth token of its own: this is a plain MCP client call like any other
-// caller's, using whatever WOOLIES_MCP_URL already grants.
+// staples-host's own server-side client for woolies-mcp -- the one path in
+// this codebase allowed to call it directly (see CLAUDE.md's Ownership
+// boundaries and Architecture section: no agent session, cold or warm, ever
+// gets woolies-mcp registered as an MCP server of its own; every product
+// search, cart read, and cart write it needs goes through a staples-host
+// tool that calls this file server-side instead). Originally read-only
+// (product search, for suggest_alternatives' history-resolution), extended
+// to include cart reads and writes (getCart, setCartQuantity) once
+// woolies-mcp was fully deregistered from agent sessions and the agent lost
+// direct cart access entirely -- see setCartQuantity.ts/getCart.ts. No auth
+// token of its own regardless: every call here is a plain MCP client call
+// like any other caller's, using whatever WOOLIES_MCP_URL already grants.
 //
 // A fresh client + transport per call, not a held-open connection -- mirrors
 // this server's own "stateless streamable-HTTP" design for its own /mcp
@@ -34,6 +40,10 @@ export interface WooliesProductFull {
   brand: string | null;
   price: number | null;
   unitPrice: string | null;
+  // 'Each' | 'Kg' (woolies-mcp's own casing) -- setCartQuantity.ts uses this
+  // to derive the pricingUnit a cart write needs ('EACH' | 'KG'), so the
+  // caller of that tool never needs to know this mechanic exists at all.
+  purchasingUnit: string | null;
 }
 
 export interface CartLine {
@@ -41,6 +51,8 @@ export interface CartLine {
   variantKey: string;
   name: string;
   quantity: number;
+  price: number | null;
+  unitPrice: string | null;
 }
 
 export class WooliesNotConfiguredError extends Error {
@@ -105,6 +117,7 @@ function toFull(raw: Record<string, unknown>): WooliesProductFull | null {
     brand: typeof raw.brand === "string" ? raw.brand : null,
     price: typeof raw.price === "number" ? raw.price : null,
     unitPrice: typeof raw.unitPrice === "string" ? raw.unitPrice : null,
+    purchasingUnit: typeof raw.purchasingUnit === "string" ? raw.purchasingUnit : null,
   };
 }
 
@@ -226,13 +239,14 @@ export async function searchFirstPage(query: string): Promise<WooliesProductFull
 }
 
 /**
- * List the current cart's lines -- used by build_shopping_list's Tier 2 to
- * find a plausible already-in-cart line for an ingredient with no purchase
- * history, the same read-only pattern as this file's other calls (no cart
- * writes, no auth token of its own). Throws only on a genuine
- * connection/protocol failure; an empty cart is a normal result (get_cart
- * proves the session first, so it's never a silently-expired-session
- * artifact -- see the real tool's own description).
+ * List the current cart's lines -- used internally by build_shopping_list's
+ * and suggest_alternatives' Tier 2 to find a plausible already-in-cart line
+ * for an ingredient with no purchase history, and exposed directly as
+ * staples-host's own get_cart tool (getCart.ts) so an agent session -- which
+ * has no woolies-mcp access of its own -- can still read cart contents.
+ * Throws only on a genuine connection/protocol failure; an empty cart is a
+ * normal result (get_cart proves the session first, so it's never a
+ * silently-expired-session artifact -- see the real tool's own description).
  */
 export async function getCart(): Promise<CartLine[]> {
   const parsed = await callWooliesTool("get_cart", {});
@@ -245,9 +259,72 @@ export async function getCart(): Promise<CartLine[]> {
       variantKey: typeof raw.variantKey === "string" ? raw.variantKey : raw.sku,
       name: raw.name,
       quantity: typeof raw.quantity === "number" ? raw.quantity : 1,
+      price: typeof raw.price === "number" ? raw.price : null,
+      unitPrice: typeof raw.unitPrice === "string" ? raw.unitPrice : null,
     });
   }
   return lines;
+}
+
+export interface SetCartQuantityResult {
+  sku: string;
+  requestedQuantity: number;
+  appliedQuantity: number;
+  adjusted: boolean;
+  // Whether the line is actually in the cart after this call -- true after
+  // a normal add/update, false after a quantity-0 removal (not a failure
+  // signal in that case, just the expected post-removal state).
+  lineInCart: boolean;
+}
+
+/**
+ * Set one cart line to an exact quantity via woolies-mcp's own
+ * set_cart_quantity tool -- 0 removes the line. Takes pricingUnit
+ * ('EACH' | 'KG') as a plain argument rather than deriving it here, since
+ * the caller (setCartQuantity.ts) already resolved it from the product's
+ * own purchasingUnit field via getProductFull -- this function stays a thin
+ * call+parse wrapper, matching every other function in this file.
+ *
+ * Confirmed live (direct diagnostic call against the real API) that the
+ * real response does NOT carry a product `name` or `price` at all -- only
+ * `sku`, `variantKey`, `requestedQuantity`/`requestedPricingUnit`,
+ * `appliedQuantity`/`appliedPricingUnit`, `adjusted`, `lineInCart`,
+ * `cartTotalQuantity`, `cartLineCount`, and checkout-readiness fields
+ * (`checkoutBlocked`/`blockers`) this function doesn't need. An earlier
+ * version of this function assumed a `name` field would be present and
+ * treated its absence as failure -- confirmed live this made the function
+ * return null on every call, including successful ones (the cart write
+ * genuinely happened; this function just reported it as failed). The
+ * caller (setCartQuantity.ts) already has the product's name/price from
+ * its own prior `getProductFull` call, so this function was never the
+ * right place to source them from anyway.
+ *
+ * Success is judged by a resolvable `sku` in the response, not by any of
+ * the optional fields above -- defensively parsed with the same tolerant
+ * typeof-guards as this file's other parsers, since this is still someone
+ * else's API response, and falls back to the requested quantity if
+ * `appliedQuantity` is missing (`adjusted: false` in that case -- the
+ * safest default when the real outcome can't be confirmed from the
+ * response shape). Throws only on a genuine connection/protocol failure;
+ * returns null only if the response carries no usable sku at all (an
+ * actual failure to apply, not a normal outcome to expect often).
+ */
+export async function setCartQuantity(
+  sku: string,
+  quantity: number,
+  pricingUnit: "EACH" | "KG",
+): Promise<SetCartQuantityResult | null> {
+  const parsed = await callWooliesTool("set_cart_quantity", { sku, quantity, pricingUnit });
+  if (!parsed) return null;
+  const resolvedSku = typeof parsed.sku === "string" ? parsed.sku : null;
+  if (!resolvedSku) return null;
+  return {
+    sku: resolvedSku,
+    requestedQuantity: typeof parsed.requestedQuantity === "number" ? parsed.requestedQuantity : quantity,
+    appliedQuantity: typeof parsed.appliedQuantity === "number" ? parsed.appliedQuantity : quantity,
+    adjusted: parsed.adjusted === true,
+    lineInCart: parsed.lineInCart === true,
+  };
 }
 
 // Safety cap on pages followed, independent of the real-world 1-2 pages a

@@ -8,12 +8,14 @@ import { registerBuildShoppingList } from "./tools/buildShoppingList.js";
 import { registerCheckRestockNeeded } from "./tools/checkRestockNeeded.js";
 import { registerFilterStaples } from "./tools/filterStaples.js";
 import { registerGetBestValue } from "./tools/getBestValue.js";
+import { registerGetCart } from "./tools/getCart.js";
 import { registerGetItem } from "./tools/getItem.js";
 import { registerIngestOrderText } from "./tools/ingestOrderText.js";
 import { registerIngestReceipt } from "./tools/ingestReceipt.js";
 import { registerListStaples } from "./tools/listStaples.js";
 import { registerRecordPurchase } from "./tools/recordPurchase.js";
 import { registerRemoveStaple } from "./tools/removeStaple.js";
+import { registerSetCartQuantity } from "./tools/setCartQuantity.js";
 import { registerSuggestAlternatives } from "./tools/suggestAlternatives.js";
 import { registerUpdateStaple } from "./tools/updateStaple.js";
 import { startWeeklyReportSentry } from "./weeklyReportSentry.js";
@@ -33,6 +35,8 @@ function buildServer(): McpServer {
   registerGetBestValue(server);
   registerBuildShoppingList(server);
   registerCheckRestockNeeded(server);
+  registerGetCart(server);
+  registerSetCartQuantity(server);
   return server;
 }
 

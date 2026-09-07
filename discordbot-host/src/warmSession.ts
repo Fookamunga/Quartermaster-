@@ -7,7 +7,6 @@ import {
   WARM_HEALTH_CHECK_TIMEOUT_MS,
   WARM_MCP_TOOL_TIMEOUT_MS,
   WARM_PROMPT_TIMEOUT_MS,
-  WOOLIES_MCP_URL,
   WORKSPACES_DIR,
 } from "./config.js";
 import { logger } from "./logger.js";
@@ -122,40 +121,15 @@ function createPromptQueue(): {
   };
 }
 
-// Kept in sync by hand with the identical constant in
-// container/agent-runner/src/index.ts (a separate build, so not a shared
-// import) -- see that file's comment for the full reasoning: excludes
-// woolies-mcp's search/browse/single-product-lookup tools (search_products,
-// search_products_batch, browse_category, get_buy_it_again, get_product)
-// since all five compete with staples-host's suggest_alternatives/
-// build_shopping_list for the same "find/compare/price a product" phrasing,
-// and confirmed live that a tool-description-only fix for that ambiguity
-// didn't change behavior. Not yet exercised by real warm-session traffic
-// (see CLAUDE.md's "Warm sessions" section), but kept aligned with the cold
-// path so it doesn't regress if warm mode is ever turned on for real.
-//
-// Passed as `disallowedTools` below, NOT `allowedTools` -- confirmed live in
-// the cold path (container/agent-runner) that an `allowedTools` narrowing
-// has zero effect under permissionMode: "bypassPermissions" (this session
-// also uses it, a few lines below): the bundled Agent SDK auto-approves
-// every tool call under that mode and explicitly ignores allow rules from
-// `allowedTools`; only deny rules from `disallowedTools` still apply.
-const WOOLIES_DISALLOWED_TOOLS = [
-  "search_products",
-  "search_products_batch",
-  "browse_category",
-  "get_buy_it_again",
-  "get_product",
-];
-
 function warmMcpServers(): Record<string, McpServerConfig> {
-  // Full custom-tool surface, same servers a cold woolworths-ordering
-  // session gets -- there's no need to strip MCP registration from a warm
-  // session, that was a real but unnecessary workaround nanoclaw built
-  // before finding the actual bug. Generous per-server tool-call timeout:
-  // see WARM_MCP_TOOL_TIMEOUT_MS's comment in config.ts.
+  // Staples-host only -- the only MCP server any agent session this codebase
+  // constructs ever registers, cold or warm. woolies-mcp is never handed to
+  // an LLM session directly; it's a backend dependency staples-host itself
+  // calls server-side (tieredSearch.ts, alternatives.ts, bestValue.ts) when
+  // it needs product/cart data. See CLAUDE.md's Architecture section.
+  // Generous per-server tool-call timeout: see WARM_MCP_TOOL_TIMEOUT_MS's
+  // comment in config.ts.
   return {
-    woolies: { type: "http", url: WOOLIES_MCP_URL, timeout: WARM_MCP_TOOL_TIMEOUT_MS },
     staples: { type: "http", url: STAPLES_HOST_URL, timeout: WARM_MCP_TOOL_TIMEOUT_MS },
   };
 }
@@ -240,9 +214,6 @@ function startWarmSession(channelKey: ChannelKey): WarmSessionState {
     "Grep",
     ...remoteServerNames.map((name) => `mcp__${name}__*`),
   ];
-  const disallowedTools = remoteServerNames.includes("woolies")
-    ? WOOLIES_DISALLOWED_TOOLS.map((tool) => `mcp__woolies__${tool}`)
-    : [];
   const model = process.env.CLAUDE_MODEL || undefined;
 
   const queue = createPromptQueue();
@@ -253,7 +224,6 @@ function startWarmSession(channelKey: ChannelKey): WarmSessionState {
       ...(model ? { model } : {}),
       cwd: workspaceDir,
       allowedTools,
-      disallowedTools,
       // permissionMode: "bypassPermissions" (with or without the redundant
       // allowDangerouslySkipPermissions) hits the CLI's own root guard --
       // isRootOutsideDeliberateSandbox() in the bundled CLI -- which refuses
