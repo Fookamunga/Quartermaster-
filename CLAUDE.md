@@ -175,28 +175,49 @@ queries. Only staples-host touches this volume.
   param, dropped rather than carried forward (`record_purchase` already
   covers anchoring a fresh item via a real purchase; can be added back if a
   real need for it shows up).
-- `suggest_alternatives(item_name)` — the ranking engine behind
-  `#woolworths-ordering`'s disambiguation flow (Tier 1 of the three-tier flow
-  in that channel's workspace CLAUDE.md; see "Choosing a Product Among
-  Multiple Matches" there for the full picture). Fuzzy-matches `item_name`
-  against the staples list, reads that item's `purchase_events`, and for up
-  to the 10 most recent events with a `product_name`, re-resolves each to a
-  live product via woolies-mcp's own `search_products` — this is
-  staples-host's one narrow exception to the Ownership boundaries above:
-  read-only, search only, no cart access, no auth token of its own. Dedupes
-  the resolved results by `sku`/`variantKey` (not by the raw extracted text,
-  which varies across receipts/orders for the same real product), ranks by
-  frequency within that window with recency as the tiebreaker, and returns
-  the #1 result as `top_pick` (`{name, sku, price}` or `null`) plus up to 5
-  more as `other_candidates` — `top_pick` is its own explicit field, not
-  array position 0, specifically so a caller can't lose track of which
-  result is the ranked winner (see the workspace CLAUDE.md's ✅-marking
-  convention, which depends on this being unambiguous). Both empty/null
-  rather than a guess if `item_name` isn't a tracked staple, has no
-  purchase history with a `product_name`, or none of the historical names
-  resolve to a live product anymore. Identically callable from Claude
-  mobile/desktop directly, not just discordbot-host's cold session — same
-  boundary as every other staples-host tool.
+- `suggest_alternatives(item_name)` — the single tool behind
+  `#woolworths-ordering`'s disambiguation flow (see that channel's workspace
+  CLAUDE.md's "Choosing a Product Among Multiple Matches" for the full
+  picture). Runs a full three-tier resolution server-side and returns
+  whichever tier actually produced results as an explicit `tier` field
+  (`"history" | "cart" | "search" | "none"`), so the caller — Claude mobile/
+  desktop or discordbot-host's agent — never needs to try more than one tier
+  itself or hold a search tool of its own to do so (see "Tool-routing fix:
+  search tools removed from the agent" below for why this matters):
+  - **`"history"`** (originally the tool's only tier): fuzzy-matches
+    `item_name` against the staples list, reads that item's
+    `purchase_events`, and for up to the 10 most recent events with a
+    `product_name`, re-resolves each to a live product via woolies-mcp's own
+    `search_products` — staples-host's own narrow exception to the Ownership
+    boundaries above: read-only, search only, no cart access, no auth token
+    of its own. Dedupes the resolved results by `sku`/`variantKey` (not by
+    the raw extracted text, which varies across receipts/orders for the same
+    real product), ranks by frequency within that window with recency as the
+    tiebreaker, and returns the #1 result as `top_pick` (`{name, sku,
+    price}`) plus up to 5 more as `other_candidates` — `top_pick` is its own
+    explicit field, not array position 0, specifically so a caller can't
+    lose track of which result is the ranked winner (see the workspace
+    CLAUDE.md's ✅-marking convention, which depends on this being
+    unambiguous).
+  - **`"cart"` / `"search"`** (`tieredSearch.ts`, new): reached when
+    `"history"` finds nothing — not a tracked staple, no purchase history
+    with a `product_name`, or none of the historical names resolve to a live
+    product anymore. `"cart"` looks for a current cart line plausibly
+    matching `item_name` and narrows a live search using that line's own
+    brand/variety words; `"search"` (reached only if `"cart"` also finds
+    nothing) runs a broad, unnarrowed search. Both return up to 5 results as
+    `other_candidates` with `top_pick: null` — no ranking signal exists at
+    either tier, so nothing is singled out. **Neither requires `item_name`
+    to match an existing tracked staple at all** — this is what makes a
+    one-off item with no staple record (not just "tracked staple, no
+    purchase history yet") resolvable through this same tool, without ever
+    creating a staple as a side effect of answering a search/pricing
+    question.
+  - **`"none"`**: nothing resolved across all three tiers. Empty/null
+    fields, never a guess.
+  - Identically callable from Claude mobile/desktop directly, not just
+    discordbot-host's cold session — same boundary as every other
+    staples-host tool.
 
   **Live-search backfill when history alone can't fill 5 `other_candidates`**
   (`alternatives.ts`): a real household can easily have bought only *one*
@@ -216,8 +237,11 @@ queries. Only staples-host touches this volume.
   existed.
 
   **Best-value entry (additive, never replaces/reorders the ranked
-  candidates):** once the top-ranked candidate resolves, one further search
-  compares it against the same *variety*, any brand -- e.g. all Edam cheese
+  candidates), computed for every tier, not just `"history"`:** once
+  whichever tier fired has a real anchor product (`top_pick` for
+  `"history"`; the matched cart item itself, not the narrowed search's own
+  top result, for `"cart"`; the top search result for `"search"`), one
+  further search compares it against the same *variety*, any brand -- e.g. all Edam cheese
   (Mainland, Woolworths, Dairyworks, Chesdale, Anchor, ...), not narrowed to
   the top pick's own brand. Deliberately broader than a same-`slug` (same
   product line) comparison: confirmed live that the narrower scope misses
@@ -292,8 +316,13 @@ queries. Only staples-host touches this volume.
   has no parseable `unitPrice`, the variety search finds nothing usable, or
   nothing survives the exclusion heuristic.
 - `get_best_value(sku)` — the same best-value computation above, exposed
-  standalone so it can be anchored on any product, not just
-  `suggest_alternatives`'s own Tier-1 top pick. **Deliberate reversal of an
+  standalone so it can be anchored on any product, not just whichever one
+  `suggest_alternatives` itself anchors on internally now (see above --
+  `suggest_alternatives` already computes and returns `best_value` for all
+  three of its own tiers, so the single-item disambiguation flow no longer
+  needs to call this separately; it stays useful for anchoring on a product
+  from somewhere else entirely, e.g. a `get_cart` line or an order-history
+  reference the agent already has a sku for). **Deliberate reversal of an
   earlier decision, not a bug fix**: best-value was originally scoped to
   Tier 1 only, on the reasoning that Tier 2/3 have no ranked-winner signal to
   anchor it on. That's still true, but best-value was never a claim about
@@ -304,9 +333,7 @@ queries. Only staples-host touches this volume.
   `get_cart` doesn't carry) via woolies-mcp's `get_product`, then runs the
   identical `findBestValue()` logic `suggest_alternatives` already uses
   internally. Returns `{name, pricePerUnit}` or an empty object if nothing
-  computable — same semantics, never a guess. See the `#woolworths-ordering`
-  workspace CLAUDE.md's "Choosing a Product Among Multiple Matches" for which
-  product each tier anchors this on.
+  computable — same semantics, never a guess.
 - `filter_staples(ingredients: string[])` — which ingredients aren't already-stocked
 - `build_shopping_list(ingredients: string[])` — resolves an entire
   multi-ingredient list (e.g. a recipe) in one call, replacing the pattern of
@@ -650,6 +677,56 @@ guild's channels), never creates either.
   as remote `type: "http"` servers (fine in cold mode — this is not the bug
   path), so the agent calls them as native `mcp__woolies__*` / `mcp__staples__*`
   tools — no IPC bridge in between.
+  - **`mcp__woolies__*` gets an explicit `disallowedTools` deny list**
+    (`WOOLIES_DISALLOWED_TOOLS` in `container/agent-runner/src/index.ts`,
+    mirrored by hand in `src/warmSession.ts` since the two are separate
+    builds) covering `search_products`, `search_products_batch`,
+    `browse_category`, `get_buy_it_again`, and `get_product`. Real, confirmed
+    problem this fixes: with both servers connected, the agent would
+    sometimes call woolies-mcp's `search_products` directly instead of
+    staples-host's `suggest_alternatives`/`build_shopping_list` for
+    "find/compare/price a product" requests, bypassing all purchase-history
+    ranking, best-value comparison, and cart-awareness those tools exist to
+    provide — most reliably reproduced with price-comparison phrasing
+    ("what's the cheapest chilli option right now"). **Two rounds of
+    strengthening `suggest_alternatives`'s own tool-description wording to
+    say "prefer this over search_products" made no measurable difference**
+    — confirmed live, re-testing the identical failing prompt against the
+    rebuilt description each time — the model was pattern-matching "price
+    comparison across a category" to a search task before it ever weighed
+    which tool's description fit better.
+    - **First structural attempt (an `allowedTools` narrowing instead of a
+      deny list) also had zero effect, and this was a second real,
+      confirmed-live dead end, not a hypothetical to avoid** — this runner
+      sets `permissionMode: "bypassPermissions"` (needed so the cold session
+      never blocks on an interactive approval prompt), and the bundled
+      Claude Agent SDK explicitly documents that bypass mode auto-approves
+      every tool call and *ignores allow rules from `allowedTools`*; only
+      deny rules from `disallowedTools` still apply under that mode.
+      Confirmed by re-testing the identical failing prompt against the
+      rebuilt `allowedTools`-narrowed image: `search_products` was still
+      reachable, byte-identical bypass. Switching the same list to
+      `disallowedTools` fixed it — confirmed via the session transcript
+      (not just the reply text): the agent's first instinct was still to
+      call `mcp__woolies__search_products` directly, but it now comes back
+      `is_error: true`, `"Error: No such tool available:
+      mcp__woolies__search_products"`, and the agent falls back to
+      `mcp__staples__suggest_alternatives` correctly.
+    - This only works because Tier 2/3 of the single-item disambiguation
+      flow (previously the agent's own job — see the workspace CLAUDE.md's
+      now-superseded prose) moved server-side into `suggest_alternatives`
+      itself at the same time (see that tool's entry above and
+      `tieredSearch.ts`) — without that move, the agent would have had no
+      way to do Tier 2/3 at all once `search_products` became unreachable.
+    - `get_product_label` and `list_categories` stay reachable alongside the
+      cart/order/location/auth tools — none of the excluded-vs-kept split is
+      about permissions, only about which tools return a product/price
+      listing that competes with a staples-host tool for the same phrasing
+      (the excluded five do; nothing kept does).
+    - staples-host itself is unaffected by any of this — it has always been
+      the sole caller of woolies-mcp's `search_products`/`get_cart`/
+      `get_product` (see Ownership boundaries above), calling them
+      server-side, never through the agent's own tool list.
 - Reaction-confirm mechanism, entirely in the persistent process, independent of
   any individual cold call: post ✅/❌ (or 👍/👎) on proposed actions; a
   pending-actions store (JSON/SQLite, keyed by Discord message ID, supports

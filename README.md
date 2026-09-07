@@ -89,6 +89,14 @@ cheapest price-per-unit option of that type — regardless of which path found
 the recommendation. See "Recipe pricing" below for why a whole recipe/
 ingredient list at once doesn't get the same treatment.
 
+The assistant always resolves a request like this through staples-host's own
+ranking/best-value tool rather than a raw Woolworths product search — this is
+deliberate, not just an implementation detail: a plain search has no idea
+what your household actually buys, so it can't rank anything or tell you
+whether it's a good price. Asking to "search products" or "browse" won't
+skip this — there's no separate path that would give you a worse, unranked
+answer.
+
 These suggestions are only as good as your purchase history, so recording it
 matters. Until Woolworths fixes their order-history API (at which point this
 becomes automatic), that's manual: copy the whole order — including its date

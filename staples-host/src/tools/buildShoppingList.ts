@@ -10,7 +10,10 @@ export function registerBuildShoppingList(server: McpServer): void {
     {
       title: "Build shopping list",
       description:
-        "Given a multi-ingredient list (e.g. from a recipe), resolve every " +
+        "The tool for a multi-ingredient list (e.g. from a recipe) -- this " +
+        "agent has no direct search tool of its own (see CLAUDE.md's " +
+        "Architecture section), so this is the only way to resolve several " +
+        "ingredients at once. Given a multi-ingredient list, resolve every " +
         "ingredient in one call instead of calling filter_staples and then " +
         "suggest_alternatives per item yourself. For each ingredient this " +
         "runs the same three-tier resolution the single-item disambiguation " +

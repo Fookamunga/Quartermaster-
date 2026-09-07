@@ -122,6 +122,32 @@ function createPromptQueue(): {
   };
 }
 
+// Kept in sync by hand with the identical constant in
+// container/agent-runner/src/index.ts (a separate build, so not a shared
+// import) -- see that file's comment for the full reasoning: excludes
+// woolies-mcp's search/browse/single-product-lookup tools (search_products,
+// search_products_batch, browse_category, get_buy_it_again, get_product)
+// since all five compete with staples-host's suggest_alternatives/
+// build_shopping_list for the same "find/compare/price a product" phrasing,
+// and confirmed live that a tool-description-only fix for that ambiguity
+// didn't change behavior. Not yet exercised by real warm-session traffic
+// (see CLAUDE.md's "Warm sessions" section), but kept aligned with the cold
+// path so it doesn't regress if warm mode is ever turned on for real.
+//
+// Passed as `disallowedTools` below, NOT `allowedTools` -- confirmed live in
+// the cold path (container/agent-runner) that an `allowedTools` narrowing
+// has zero effect under permissionMode: "bypassPermissions" (this session
+// also uses it, a few lines below): the bundled Agent SDK auto-approves
+// every tool call under that mode and explicitly ignores allow rules from
+// `allowedTools`; only deny rules from `disallowedTools` still apply.
+const WOOLIES_DISALLOWED_TOOLS = [
+  "search_products",
+  "search_products_batch",
+  "browse_category",
+  "get_buy_it_again",
+  "get_product",
+];
+
 function warmMcpServers(): Record<string, McpServerConfig> {
   // Full custom-tool surface, same servers a cold woolworths-ordering
   // session gets -- there's no need to strip MCP registration from a warm
@@ -206,7 +232,17 @@ function startWarmSession(channelKey: ChannelKey): WarmSessionState {
 
   const mcpServers = warmMcpServers();
   const remoteServerNames = Object.keys(mcpServers);
-  const allowedTools = ["Bash", "Read", "Write", "Glob", "Grep", ...remoteServerNames.map((name) => `mcp__${name}__*`)];
+  const allowedTools = [
+    "Bash",
+    "Read",
+    "Write",
+    "Glob",
+    "Grep",
+    ...remoteServerNames.map((name) => `mcp__${name}__*`),
+  ];
+  const disallowedTools = remoteServerNames.includes("woolies")
+    ? WOOLIES_DISALLOWED_TOOLS.map((tool) => `mcp__woolies__${tool}`)
+    : [];
   const model = process.env.CLAUDE_MODEL || undefined;
 
   const queue = createPromptQueue();
@@ -217,6 +253,7 @@ function startWarmSession(channelKey: ChannelKey): WarmSessionState {
       ...(model ? { model } : {}),
       cwd: workspaceDir,
       allowedTools,
+      disallowedTools,
       // permissionMode: "bypassPermissions" (with or without the redundant
       // allowDangerouslySkipPermissions) hits the CLI's own root guard --
       // isRootOutsideDeliberateSandbox() in the bundled CLI -- which refuses
