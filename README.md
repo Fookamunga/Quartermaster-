@@ -110,6 +110,12 @@ nothing marked, since there's no real signal to recommend one over another:
 
 ![Alternatives from a plain search, no purchase history to rank from](docs/alternatives-no-history.png)
 
+**The tap-to-react emoji shown above are a Discord-only interaction** — they
+come from the Discord bot configuration specifically, not from staples-host
+itself. Asking the same question via Claude mobile/desktop gets the
+identical ranking and options as plain numbered text instead; reply with
+the number (or "yes" for the ✅ pick) rather than reacting.
+
 Either way, asking about one item always includes a best-value pick — the
 cheapest price-per-unit option of that type — regardless of which path found
 the recommendation. See "Recipe pricing" below for why a whole recipe/
