@@ -63,8 +63,13 @@ suspect.
 ## Confirming Cart Changes You Initiate
 
 When the user explicitly asks for something ("add milk", "get the stuff for
-lasagne"), just add it directly with `mcp__staples__set_cart_quantity` (once
-per item) — no confirmation needed for a request they already made.
+lasagne"), resolve it via `suggest_alternatives` (or `build_shopping_list`
+for a recipe) as normal, then confirm via a reaction before writing to the
+cart — see "Rendering the candidates" below. **This applies even when
+there's only one real candidate — a genuinely single match still gets a
+✅-only confirmation now, never an automatic add.** That's a deliberate
+change, not the original design: see "Rendering the candidates" for the
+real case that prompted it.
 
 When *you* are the one suggesting a cart change the user hasn't asked for in
 this message — a standing-preference reorder, "you're low on X, want me to
@@ -172,10 +177,33 @@ whether any candidate is already in it, same as always. Then:
 or `best_value`.** An earlier version of this numbered every candidate
 uniformly, `top_pick` and `best_value` included — confirmed live as wrong
 (a real posted message numbered all 7 entries). The correct assignment:
-- `top_pick` → ✅ only, never a number. Only present for `tier: "history"`.
+- `top_pick` → ✅ only, never a number. Two distinct reasons a candidate
+  ends up here, both rendered the same way (one reaction, no numbers to
+  choose between):
+  - **A genuine `tier: "history"` recommendation** — backed by real
+    purchase frequency, as before.
+  - **The sole real candidate, whatever the tier** — see the "genuinely
+    only one candidate" rule below. Phrase the summary text honestly about
+    which one applies (a real recommendation vs. "this is the only match I
+    found") — don't claim purchase-history backing that isn't there.
 - `other_candidates` → numbered 1️⃣ through however many there are, up to
   5 (matching `suggest_alternatives`'s own cap), in the order returned.
 - `best_value` → 💰 only, never a number.
+- **A single real candidate, from any tier, is never auto-added — it goes
+  into `top_pick` for a ✅-only confirmation, exactly like a duplicate
+  case below (represented once, one reaction), not zero reactions.** This
+  is a deliberate, real bug fix, not a design tightening for its own sake:
+  searching "lime" once matched exactly one product — "lime milk
+  flavouring" — and the old rule ("skip confirmation when there's only one
+  candidate") auto-added it with no chance to catch the wrong match before
+  it hit the cart. Finding exactly one candidate is not the same as
+  confirming it's the *correct* one; fuzzy/text matching can confidently
+  return the wrong product. So: whenever `tier: "cart"` or `tier: "search"`
+  resolves to exactly one `other_candidates` entry, treat that entry as
+  `top_pick` for rendering purposes (✅, not "1️⃣"), with `other_candidates`
+  left empty — there's nothing to choose *between*, but the match itself
+  still needs confirming. This is the only situation where `top_pick` gets
+  used outside `tier: "history"`.
 - A duplicate sku is represented **once**, by whichever role already
   covers it — never listed twice, and never left in `other_candidates`'
   numbering once it's been pulled out into `top_pick` or `best_value`:
@@ -251,14 +279,20 @@ this conversation's context already intact. This doesn't block any other
 ingredient's own reaction-based entry from still going into the array
 normally.
 
-Only skip this whole flow (reaction-based or typed-reply fallback) when
-there's a single clearly obvious match (an exact name match, or genuinely
-only one real candidate) — don't ask the user to confirm a choice that
-isn't actually ambiguous, and don't write `candidate-options.json` for it;
-just call `mcp__staples__set_cart_quantity` directly (see "Confirming Cart
-Changes You Initiate" above). This exact-match check can short-circuit at
-any tier: if Tier 1 or Tier 2 already narrows to one obvious product,
-there's no need to fall through further or to ask the user to confirm it.
+**There is no longer a case where a real match skips confirmation entirely
+— this was a real bug, not a simplification worth keeping.** A previous
+version of this rule skipped the whole flow (no reaction, no
+`candidate-options.json`, straight to `mcp__staples__set_cart_quantity`)
+for "a single clearly obvious match (an exact name match, or genuinely
+only one real candidate)." That's exactly the shape of the "lime" bug
+above: an apparently-obvious single match is still just a text/fuzzy
+match, and can be wrong with no chance to catch it before the cart-write
+happens. The only thing that still skips the reaction flow (and skips
+writing `candidate-options.json`) for a single-item request is
+`tier: "none"` — genuinely nothing resolved, so there's nothing to
+confirm. Every other outcome gets a message: ✅-only when there's a single
+real candidate (see step 1 above), ✅/numbered/💰 when there's more than
+one.
 
 ## Recipe / Multi-Ingredient Shopping Lists
 
@@ -280,23 +314,33 @@ convention for front ends without a reaction mechanism — don't restate or
 contradict that description; this section only covers what *this* channel
 does differently with the same underlying data.
 
+**Only a genuine no-action case skips a reaction message — everything that's
+about to be added to the cart gets one, single candidate or not.** An
+earlier version of this section skipped confirmation for an ingredient with
+exactly one real candidate, mirroring what turned out to be a real bug in
+the single-item flow (see "Rendering the candidates" above — the "lime"
+case). That carve-out is gone: a single real candidate here gets the same
+✅-only confirmation a single-item request would.
+
 For each entry in `items`:
-- **`already_stocked: true`** — no candidate-options entry. Mention it in
-  your plain-text reply, suffixed "Staple - not ordered by default", same
-  as before. If the requester explicitly asks to order a staple anyway, add
-  it normally for that request.
-- **`tier: "none"`** — nothing resolved at all, nothing to react to. Say so
-  plainly in your reply; don't invent an option.
+- **`already_stocked: true`** — no candidate-options entry. This is the one
+  genuine no-action case: nothing is being added, so there's nothing to
+  confirm. Mention it in your plain-text reply, suffixed "Staple - not
+  ordered by default", same as before. If the requester explicitly asks to
+  order a staple anyway, treat that as a fresh add and run it through the
+  normal confirmation flow below, same as any other ingredient.
+- **`tier: "none"`** — nothing resolved at all, nothing to react to (and
+  nothing to add). Say so plainly in your reply; don't invent an option.
 - **Exactly one real candidate total** (`all_alternatives.length === 1` —
   genuinely only one product exists for this ingredient, not "one
-  recommended among several") — the same single-obvious-match case the
-  single-item flow already skips confirmation for. Call
-  `mcp__staples__set_cart_quantity` directly and mention what was added in
-  your reply. No candidate-options entry, no reaction needed for something
-  that isn't actually ambiguous.
-- **Otherwise** (`all_alternatives.length > 1`) — this ingredient needs a
-  choice. Build one `CandidateOptions` entry (see "Rendering the
-  candidates" above for the exact shape): `top_pick` is the
+  recommended among several") — build one `CandidateOptions` entry with
+  that candidate as `top_pick` (✅-only, `other_candidates: []`), exactly
+  like the single-item flow's own sole-candidate case. **Never call
+  `mcp__staples__set_cart_quantity` directly for this** — a single
+  candidate is a match, not a confirmed-correct match.
+- **More than one candidate** (`all_alternatives.length > 1`) — this
+  ingredient needs a choice. Build one `CandidateOptions` entry (see
+  "Rendering the candidates" above for the exact shape): `top_pick` is the
   `recommended: true` entry from `all_alternatives` if `tier: "history"`
   (else `null`); `other_candidates` is the rest of `all_alternatives`
   (i.e. excluding whichever one became `top_pick`), capped at 5;
@@ -314,9 +358,10 @@ independently reactable, each executing its own `set_cart_quantity` call
 the moment its reaction is used, completely independently of every other
 pending ingredient (there is no "confirm the whole recipe" step; adding
 one ingredient never waits on or blocks another). Your own text reply
-should cover only what doesn't get a reaction message (already-stocked,
-single-obvious-match, and nothing-found ingredients) plus a short note that
-the rest are posted separately for reaction — don't restate their
+should cover only what doesn't get a reaction message (`already_stocked`
+and `tier: "none"` ingredients — the only two genuine no-message cases)
+plus a short note that everything else (single-candidate and multi-
+candidate alike) is posted separately for reaction — don't restate their
 candidates as text too.
 
 If `build_shopping_list` returns `partial: true`/`not_attempted` (a very

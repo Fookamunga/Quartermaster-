@@ -947,6 +947,31 @@ guild's channels), never creates either.
       quantity, this *reduces* it to 1 rather than adding one more (a known
       simplification of `set_cart_quantity`'s own "exact amount, not a
       delta" semantics, not a bug).
+    - **A single real candidate is never auto-added — a real bug fix, not
+      a tightening of an already-safe design.** Both the single-item flow
+      and this recipe extension originally skipped the whole reaction flow
+      for "a single clearly obvious match," calling `set_cart_quantity`
+      straight away on the reasoning that an unambiguous match doesn't
+      need a choice. A real case disproved that: searching "lime" matched
+      exactly one product — "lime milk flavouring" — and the old rule
+      auto-added it with no chance to catch the wrong match before it hit
+      the cart. Finding exactly one candidate is not the same as
+      confirming it's the *correct* one; fuzzy/text matching can
+      confidently return the wrong product regardless of how many
+      candidates it considered along the way. Fixed by removing the
+      skip-confirmation carve-out entirely, in both flows: a sole
+      candidate (from any tier, single-item or recipe) is now rendered
+      into `top_pick` for a ✅-only confirmation — one reaction, nothing to
+      choose between, but still a real confirmation step — rather than
+      zero reactions and an immediate write. Needed no code changes at
+      all: `postAndTrackCandidates`/`handleCandidateReaction` already
+      handled a `topPick`-with-no-`other_candidates` message correctly by
+      construction, so this was purely a prompt-level fix (the workspace
+      CLAUDE.md's "skip the whole flow" and "already-stocked or single-
+      obvious-match" carve-outs). The only genuine no-confirmation cases
+      left are ones where nothing is actually being added: `tier: "none"`
+      (single-item, nothing resolved) and `already_stocked: true`
+      (recipe, no restock needed) — never "the match looked obvious."
 - Session-ID resumption for conversation continuity across separate cold calls
   (save session ID, pass `--resume <id>` next time) — new addition, not in the old
   code, build it in from the start.
