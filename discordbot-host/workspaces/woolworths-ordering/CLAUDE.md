@@ -201,45 +201,55 @@ uniformly, `top_pick` and `best_value` included — confirmed live as wrong
   line when `top_pick` itself is already in cart, as before.
 
 **2. Write a file named `candidate-options.json`** in this folder
-(overwrite it if it already exists) with exactly this shape:
+(overwrite it if it already exists) — **always a JSON array**, even for a
+single item (one-entry array). Each entry has exactly this shape:
 
 ```json
-{
-  "summary": "<Discord-ready text from step 1 — ✅/numbered/💰 lines as built above, following the Discord Formatting rules below>",
-  "top_pick": { "name": "...", "sku": "..." },
-  "other_candidates": [
-    { "name": "...", "sku": "..." }
-  ],
-  "best_value": { "name": "...", "sku": "..." }
-}
+[
+  {
+    "summary": "<Discord-ready text from step 1 — ✅/numbered/💰 lines as built above, following the Discord Formatting rules below>",
+    "top_pick": { "name": "...", "sku": "..." },
+    "other_candidates": [
+      { "name": "...", "sku": "..." }
+    ],
+    "best_value": { "name": "...", "sku": "..." }
+  }
+]
 ```
 
 `top_pick` and `best_value` are `null` when not present (no `tier:
 "history"` result, or best-value not computable, or — the still-unconfirmed
 case above — it duplicates `top_pick`). `other_candidates` is `[]` if
 empty, capped at 5 entries. A separate host-side process (not this
-session, not `mcp__staples__*`) reads this file after you finish, posts
-`summary` as the message, and attaches ✅ (if `top_pick` given), one
-numbered reaction per `other_candidates` entry, 💰 (if `best_value`
-given), and a ❌ decline reaction — you are not involved in the reaction
-itself and won't see the outcome unless the user brings it up in a later
-message. Whichever reaction gets used calls
-`mcp__staples__set_cart_quantity(sku, quantity: 1)` directly for that exact
-candidate — **always an exact quantity of 1, not an increment**, so a
+session, not `mcp__staples__*`) reads this file after you finish and posts
+each array entry as its **own separate Discord message**, in array order —
+never combined into one message, even when there's more than one entry
+(see "Recipe / Multi-Ingredient Shopping Lists" below for when that
+happens). For each message posted, it attaches ✅ (if that entry's
+`top_pick` given), one numbered reaction per that entry's
+`other_candidates`, 💰 (if that entry's `best_value` given), and a ❌
+decline reaction — you are not involved in the reaction itself and won't
+see the outcome unless the user brings it up in a later message. Whichever
+reaction gets used calls `mcp__staples__set_cart_quantity(sku, quantity:
+1)` directly for that exact candidate, independently of any other pending
+entry — **always an exact quantity of 1, not an increment**, so a
 candidate already in the cart with a higher quantity would be reduced to 1
 by this path (a known simplification, not something to work around). Don't
 repeat the summary again in your own reply if you send one; a short "let me
 know" is enough, or nothing else at all.
 
 **3. If `other_candidates` somehow has more than 5 entries** (shouldn't
-happen — `suggest_alternatives` caps it at 5 itself), fall back to the old
-typed-reply flow instead of writing `candidate-options.json`: render the
-same content as a plain numbered reply, then wait for the user's next
-message and treat it as the selection (an affirmative reply like
-"yes"/"sounds good" selects `top_pick`, a bare number selects that
+happen — `suggest_alternatives`/`build_shopping_list` both cap it at 5
+themselves), fall back to the old typed-reply flow **for that one
+ingredient only** instead of including it in the `candidate-options.json`
+array: render its content as a plain numbered reply, then wait for the
+user's next message and treat it as the selection (an affirmative reply
+like "yes"/"sounds good" selects `top_pick`, a bare number selects that
 position) before calling `mcp__staples__set_cart_quantity` yourself.
 Session-ID resumption means that follow-up arrives as a new cold call with
-this conversation's context already intact.
+this conversation's context already intact. This doesn't block any other
+ingredient's own reaction-based entry from still going into the array
+normally.
 
 Only skip this whole flow (reaction-based or typed-reply fallback) when
 there's a single clearly obvious match (an exact name match, or genuinely
@@ -256,21 +266,65 @@ When a request is for the items needed for a recipe (or any list of several
 ingredients at once), call `mcp__staples__build_shopping_list` with the full
 ingredient list — do **not** call `filter_staples` and then run the
 single-item "Choosing a Product Among Multiple Matches" flow yourself per
-ingredient; `build_shopping_list` already does both, and assigns numbering
-that's globally unique across the whole reply (required so a flat numeric
-reply like "1 4 6" can unambiguously pick one option per ingredient — the
-single-item flow's own per-request numbering doesn't compose across several
-ingredients shown in one message). See CLAUDE.md's MCP tools section and the
-tool's own description for the full response shape and — critically — the
-exact rule for interpreting a reply and for re-prompting an ingredient it
-didn't address; that rule lives only in the tool description (it reaches
-Claude mobile/desktop identically), so don't restate or improvise a different
-version of it here.
+ingredient; `build_shopping_list` already does both in one call. See
+CLAUDE.md's MCP tools section and the tool's own description for the full
+response shape (`items`, each `already_stocked` or with `tier`/
+`alternatives`/`all_alternatives`).
 
-Already-stocked ingredients: still show them in the list you return, suffixed
-with "Staple - not ordered by default" instead of a cart line, same as
-before. If the requester explicitly asks to order a staple anyway, add it
-normally for that request.
+**This channel resolves ambiguous ingredients via the same numbered-reaction
+mechanism as a single-item request — one separate message per ingredient
+that needs a choice, never combined into one message.** This is specific to
+Discord: `build_shopping_list`'s own tool description (which Claude mobile/
+desktop also reads) still documents the combined-reply/typed-number
+convention for front ends without a reaction mechanism — don't restate or
+contradict that description; this section only covers what *this* channel
+does differently with the same underlying data.
+
+For each entry in `items`:
+- **`already_stocked: true`** — no candidate-options entry. Mention it in
+  your plain-text reply, suffixed "Staple - not ordered by default", same
+  as before. If the requester explicitly asks to order a staple anyway, add
+  it normally for that request.
+- **`tier: "none"`** — nothing resolved at all, nothing to react to. Say so
+  plainly in your reply; don't invent an option.
+- **Exactly one real candidate total** (`all_alternatives.length === 1` —
+  genuinely only one product exists for this ingredient, not "one
+  recommended among several") — the same single-obvious-match case the
+  single-item flow already skips confirmation for. Call
+  `mcp__staples__set_cart_quantity` directly and mention what was added in
+  your reply. No candidate-options entry, no reaction needed for something
+  that isn't actually ambiguous.
+- **Otherwise** (`all_alternatives.length > 1`) — this ingredient needs a
+  choice. Build one `CandidateOptions` entry (see "Rendering the
+  candidates" above for the exact shape): `top_pick` is the
+  `recommended: true` entry from `all_alternatives` if `tier: "history"`
+  (else `null`); `other_candidates` is the rest of `all_alternatives`
+  (i.e. excluding whichever one became `top_pick`), capped at 5;
+  `best_value` is **always `null`** here — `build_shopping_list` never
+  computes one (removed entirely after a real production timeout; see
+  CLAUDE.md's "Scale fix" history for `build_shopping_list` — not
+  something to reintroduce per-ingredient without that history in mind).
+  Never auto-select even when `top_pick` is present: a recommendation is
+  always a suggestion, only acted on if its own ✅ reaction gets used.
+
+Collect every such entry into **one `candidate-options.json` array**, in
+the same order as the ingredient list, and write it once at the end of
+your turn — the host posts them as a sequence of separate messages, each
+independently reactable, each executing its own `set_cart_quantity` call
+the moment its reaction is used, completely independently of every other
+pending ingredient (there is no "confirm the whole recipe" step; adding
+one ingredient never waits on or blocks another). Your own text reply
+should cover only what doesn't get a reaction message (already-stocked,
+single-obvious-match, and nothing-found ingredients) plus a short note that
+the rest are posted separately for reaction — don't restate their
+candidates as text too.
+
+If `build_shopping_list` returns `partial: true`/`not_attempted` (a very
+long list that couldn't all be resolved within its own time budget), say so
+plainly as before — the ingredients that *did* resolve still go through the
+per-ingredient handling above; `not_attempted` ones get neither a candidate
+entry nor a cart-add, just a plain note that they can be asked about in a
+follow-up call.
 
 The single-item "Choosing a Product Among Multiple Matches" flow above is
 unaffected by any of this — it's still exactly how a single generic request

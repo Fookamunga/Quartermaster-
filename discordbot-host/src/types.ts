@@ -31,10 +31,11 @@ export interface PendingActionItem {
   pricingUnit?: "EACH" | "KG";
 }
 
-// Single-item disambiguation flow only (see candidateReactions.ts) --
-// recipe/multi-item shopping-list replies stay on the existing typed-reply
-// flow, unaffected by this. No pricingUnit needed: execution goes through
-// staples-host's own set_cart_quantity tool (added for cart-write
+// One candidate-reaction message's worth of content -- used by both the
+// single-item disambiguation flow and (as of the recipe extension) the
+// Recipe/Multi-Ingredient flow, one entry per ingredient that needs a
+// choice (see candidateReactions.ts). No pricingUnit needed: execution goes
+// through staples-host's own set_cart_quantity tool (added for cart-write
 // restoration), which resolves the purchasing unit itself.
 //
 // Each field maps to exactly one reaction, never a number for top_pick or
@@ -47,12 +48,26 @@ export interface PendingActionItem {
 // twice: it's represented by whichever field already covers it (top_pick or
 // best_value), never both, and never removed from other_candidates only to
 // reappear unnumbered without also being excluded there.
+//
+// best_value is always null for a recipe-sourced entry -- build_shopping_list
+// never computes one (removed entirely after a real production timeout; see
+// CLAUDE.md's "Scale fix" history). Not something this extension reintroduces.
 export interface CandidateOptions {
   summary: string;
   top_pick: CandidateOption | null;
   other_candidates: CandidateOption[];
   best_value: CandidateOption | null;
 }
+
+// The file (candidate-options.json) is always an array now, whether it came
+// from a single-item request (one entry, or the file is simply absent if
+// the request needed no choice) or a recipe request (one entry per
+// ingredient that needs a choice -- already-stocked and single-obvious-match
+// ingredients never get an entry at all, see the workspace CLAUDE.md).
+// Posted as a sequence of separate Discord messages, one per entry, never
+// combined into one -- that's the exact clutter problem the whole reaction
+// mechanism was scoped away from for multi-item requests originally.
+export type CandidateOptionsFile = CandidateOptions[];
 
 export interface CandidateOption {
   name: string;

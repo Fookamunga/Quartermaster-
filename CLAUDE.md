@@ -864,64 +864,80 @@ guild's channels), never creates either.
     `set_cart_quantities`, using the pending entry's already-resolved SKUs/
     quantities. No agent needs to be in the loop to apply a decision that's
     already been made.
-  - **Generalized to N options for single-item disambiguation
-    (`candidateReactions.ts`), a separate mechanism from the ✅/❌ one
-    above, not a variant of it.** The single-item "Choosing a Product Among
-    Multiple Matches" flow (see the workspace CLAUDE.md) previously
-    resolved its own candidate list via a typed reply ("yes", or a bare
-    number) in the next cold call. That's now replaced with one numbered
-    keycap reaction per candidate — same "write a file instead of calling a
-    tool" pattern as `propose-action.json`, but for a *choice among options*
+  - **Generalized to N options for single-item disambiguation and,
+    since, the Recipe/Multi-Ingredient flow (`candidateReactions.ts`), a
+    separate mechanism from the ✅/❌ one above, not a variant of it.** The
+    single-item "Choosing a Product Among Multiple Matches" flow (see the
+    workspace CLAUDE.md) previously resolved its own candidate list via a
+    typed reply ("yes", or a bare number) in the next cold call. That's now
+    replaced with reactions — same "write a file instead of calling a tool"
+    pattern as `propose-action.json`, but for a *choice among options*
     rather than a *yes/no on one already-decided item list*, so it needed
-    its own file (`candidate-options.json`: `{ summary: string, options:
-    [{ name, sku }] }`), its own pending store
+    its own file (`candidate-options.json`), its own pending store
     (`pending-candidate-reactions.json`, distinct from
     `pending-actions.json` — the two never share a message ID, so their
     handlers coexist safely on the same `MessageReactionAdd` listener), and
-    its own reaction handler. Deliberately scoped to single-item requests
-    only — `build_shopping_list`'s recipe/multi-ingredient replies stay on
-    the typed-reply flow untouched, since a longer list (especially several
-    ingredients each with their own candidate set) would render as an
-    unusable wall of reactions on a phone screen.
-    - **`MAX_CANDIDATE_OPTIONS = 7`**, matching `suggest_alternatives`'s own
-      hard ceiling (`top_pick` + up to 5 `other_candidates` + `best_value`,
-      `best_value` always counted since it must always be reachable — see
-      below) — so in normal operation every single-item request should
-      qualify for reactions; the cap is a defensive guard against the
-      tool's own shape changing later, not a commonly-hit fallback trigger.
-      Above it, the agent falls back to the pre-existing typed-reply flow
-      instead of writing the file at all. Enforced defensively host-side
-      too (`postAndTrackCandidates` truncates and logs a warning rather
-      than trusting the agent never to exceed it).
+    its own reaction handler.
+    - **Reaction assignment is role-based, not positional — this was a real
+      rendering bug, not the original design.** The first version numbered
+      every candidate uniformly, `top_pick` and `best_value` included;
+      confirmed wrong via a live test message (all 7 entries numbered,
+      including the ✅ and 💰 ones). Corrected assignment, as shipped:
+      `top_pick` → ✅ only, never a number; `other_candidates` → 1️⃣
+      through `MAX_OTHER_CANDIDATES` (5, matching `suggest_alternatives`'s
+      own cap); `best_value` → 💰 only, never a number; ❌ to decline,
+      always. `CandidateOptions` (`types.ts`) has one field per role
+      instead of a flat numbered array specifically so the host code can't
+      reintroduce positional numbering by accident.
     - **`best_value` must always be reachable as its own reaction, marked
-      with 💰, never silently dropped — a real bug here, not just a design
+      with 💰, never silently dropped — a real bug, not just a design
       choice to get right the first time.** `findBestValue` originally
-      returned `{name, pricePerUnit}` with no `sku` (see staples-host's
-      MCP tools section above), so an agent building the reaction list for
-      a `best_value` that wasn't a duplicate of an existing candidate had
-      no sku to attach a reaction to — it reasonably concluded the entry
-      couldn't be included and dropped it, which is exactly backwards: a
-      genuinely distinct best-value product is the case that most needs
-      its own reaction. Confirmed against this session's own real test
-      data that both shapes occur, not just the duplicate one: "milk" (6
-      total) had `best_value` as the *exact same product* as
-      `other_candidates[4]` (Vitasoy); "chilli" and "bread" (4 and 6 total
-      respectively) had `best_value` as a genuinely different product
-      (Gregg's Sweet Chilli Sauce; Mighty Fresh Toast Bread White) not
-      present in `top_pick`/`other_candidates` at all — "bread" is where
-      the bug was directly reproduced live (the agent's own candidate list
-      noted "no SKU was returned for it" and excluded it). Fixed at the
-      source (`findBestValue` now returns `sku`, not re-derived via a
-      fresh lookup) rather than worked around in the reaction-building
-      logic. The two resulting cases: if `best_value`'s sku matches an
-      already-numbered entry, that entry is annotated with 💰 instead of
-      getting a second reaction for the same product; otherwise
-      `best_value` gets its own numbered entry, marked with 💰, same as
-      any other candidate. Either way it always counts toward
-      `MAX_CANDIDATE_OPTIONS` — the cap was already sized assuming
-      `best_value` takes a slot, so fixing the bug didn't change the
-      effective max, it just made `best_value` actually reach the slot
-      reserved for it.
+      returned `{name, pricePerUnit}` with no `sku` (see staples-host's MCP
+      tools section above), so an agent building a `best_value` that wasn't
+      a duplicate of an existing candidate had no sku to attach a reaction
+      to — it reasonably concluded the entry couldn't be included and
+      dropped it, exactly backwards: a genuinely distinct best-value
+      product is the case that most needs its own reaction. Confirmed
+      against real test data that both shapes occur: "milk" had
+      `best_value` as the *exact same product* as an `other_candidates`
+      entry (Vitasoy); "chilli" and "bread" had `best_value` as a
+      genuinely different product (Gregg's Sweet Chilli Sauce; Mighty
+      Fresh Toast Bread White) not present in `top_pick`/`other_candidates`
+      at all. Fixed at the source (`findBestValue` now returns `sku`, not
+      re-derived via a fresh lookup). Resulting rule: a duplicate sku is
+      represented once, by whichever role already covers it (`top_pick` or
+      `best_value`), never given a second reaction for the same product.
+      Whether `best_value` can duplicate `top_pick` itself specifically has
+      never been observed in real data across this project's testing —
+      documented as unconfirmed in the workspace CLAUDE.md rather than
+      asserting a display rule with no evidence behind it.
+    - **Extended to `build_shopping_list`'s Recipe/Multi-Ingredient flow**:
+      `candidate-options.json` is now always a JSON array (one entry per
+      ingredient needing a choice; a single-item request writes at most
+      one entry). Each entry is posted as its own separate Discord message
+      in array order — **deliberately never combined into one message**,
+      which is the exact clutter problem multi-item reactions were
+      originally scoped away from (a recipe's worth of candidate sets
+      stacked into one message would be an unusable wall of reactions on a
+      phone). This needed no changes to `candidateReactions.ts` itself —
+      `postAndTrackCandidates` already keyed its pending store by Discord's
+      own per-message ID, so calling it once per ingredient in a loop
+      (`index.ts`) already produces correctly-independent concurrent
+      pending selections with zero restructuring. Per-ingredient skip
+      rules mirror the single-item flow's own: `already_stocked` and
+      genuinely single-candidate ingredients (`all_alternatives.length ===
+      1`) never get a candidate entry at all, only mentioned in the plain-
+      text reply; `tier: "none"` likewise (nothing to react to). `top_pick`
+      for a recipe-sourced entry is `all_alternatives`'s `recommended: true`
+      member when `tier: "history"`; `best_value` is **always `null`** —
+      `build_shopping_list` has never computed one, removed entirely after
+      a real production timeout (see this tool's own "Scale fix" history
+      above) — not reintroduced by this extension. No cross-message
+      synchronization was added: each ingredient's reaction executes its
+      own `set_cart_quantity` call independently and immediately, the same
+      as a single-item request always has — there is no "confirm the whole
+      recipe" step, matching how the pre-existing typed-reply flow already
+      behaved (each resolved ingredient just gets added, no batching).
     - **Executing on a numbered reaction** mirrors the ✅ case exactly in
       spirit but calls staples-host's `set_cart_quantity` tool instead of
       woolies-mcp directly — reusing the same tool the typed-reply flow

@@ -21,7 +21,7 @@ import {
 } from "./config.js";
 import { logger } from "./logger.js";
 import type {
-  CandidateOptions,
+  CandidateOptionsFile,
   ChannelKey,
   ContainerInput,
   ContainerOutput,
@@ -139,18 +139,24 @@ export function takeProposedAction(channelKey: ChannelKey): ProposeAction | null
 /**
  * After a cold run exits, check the channel's workspace for a
  * candidate-options.json the agent may have written instead of a typed-
- * reply-driven candidate list -- the single-item disambiguation flow's own
- * numbered-reaction mechanism (see candidateReactions.ts), scoped to single-
- * item requests only. Same consume-whether-or-not-it-parses pattern as
- * takeProposedAction, for the same reason (a malformed file can't wedge
- * every future run in this channel).
+ * reply-driven candidate list -- the numbered-reaction mechanism (see
+ * candidateReactions.ts), used by both the single-item disambiguation flow
+ * and the Recipe/Multi-Ingredient flow. Always an array now: one entry per
+ * ingredient that needs a choice (a single-item request writes at most one
+ * entry; a recipe request may write several, one per ambiguous ingredient
+ * -- already-stocked and single-obvious-match ingredients never get an
+ * entry). The caller posts each entry as its own separate Discord message,
+ * in array order -- never combined into one. Same consume-whether-or-not-
+ * it-parses pattern as takeProposedAction, for the same reason (a malformed
+ * file can't wedge every future run in this channel).
  */
-export function takeCandidateOptions(channelKey: ChannelKey): CandidateOptions | null {
+export function takeCandidateOptions(channelKey: ChannelKey): CandidateOptionsFile | null {
   const filePath = path.join(WORKSPACES_DIR, channelKey, CANDIDATE_OPTIONS_FILENAME);
   if (!existsSync(filePath)) return null;
   try {
     const raw = readFileSync(filePath, "utf8");
-    return JSON.parse(raw) as CandidateOptions;
+    const parsed = JSON.parse(raw) as CandidateOptionsFile;
+    return Array.isArray(parsed) ? parsed : null;
   } catch (err) {
     logger.error("Failed to parse candidate-options.json", { channelKey, err: String(err) });
     return null;

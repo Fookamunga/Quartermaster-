@@ -206,15 +206,23 @@ async function handleMessage(message: Message): Promise<void> {
       );
     }
 
-    const candidateOptions = takeCandidateOptions(channelKey);
-    if (candidateOptions) {
-      await postAndTrackCandidates(
-        message.channelId,
-        candidateOptions.summary,
-        candidateOptions.top_pick,
-        candidateOptions.other_candidates,
-        candidateOptions.best_value,
-      ).catch((err) => logger.error("Failed to post candidate options", { err: String(err) }));
+    // Always an array -- a single-item request writes at most one entry, a
+    // recipe request may write several (one per ambiguous ingredient).
+    // Posted in order, awaited one at a time, so they land as a genuine
+    // sequence of separate messages rather than firing concurrently --
+    // deliberately never combined into one message (see candidateReactions.ts
+    // and the workspace CLAUDE.md's Recipe/Multi-Ingredient section).
+    const candidateOptionsList = takeCandidateOptions(channelKey);
+    if (candidateOptionsList) {
+      for (const candidateOptions of candidateOptionsList) {
+        await postAndTrackCandidates(
+          message.channelId,
+          candidateOptions.summary,
+          candidateOptions.top_pick,
+          candidateOptions.other_candidates,
+          candidateOptions.best_value,
+        ).catch((err) => logger.error("Failed to post candidate options", { err: String(err) }));
+      }
     }
   });
 }
