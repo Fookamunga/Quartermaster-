@@ -30,6 +30,35 @@ interface ContainerOutput {
 const OUTPUT_START_MARKER = "---DISCORDBOT_OUTPUT_START---";
 const OUTPUT_END_MARKER = "---DISCORDBOT_OUTPUT_END---";
 
+// staples-host tools deliberately kept off this agent's tool set even
+// though staples-host itself is the agent's only MCP server (see CLAUDE.md's
+// Architecture section) -- a prompt-level instruction ("always confirm via
+// a reaction before writing to the cart") is not a structural guarantee: a
+// future phrasing or prompt edit could have the model call
+// set_cart_quantity directly again, the same class of bug that motivated
+// deregistering woolies-mcp entirely, just recurring one layer up. The only
+// place a cart write may ever originate is candidateReactions.ts's own
+// handleCandidateReaction -- a plain host-side MCP client call
+// (mcpClient.ts's callTool) triggered by a real Discord reaction event, not
+// an agent tool-use turn, and therefore a completely separate code path
+// unaffected by this deny list (allowedTools/disallowedTools only govern
+// what an Agent SDK query() session can invoke).
+//
+// Must be passed as `disallowedTools`, not `allowedTools` -- confirmed live
+// during the woolies-mcp deregistration that permissionMode:
+// "bypassPermissions" (set below) makes the SDK auto-approve every tool
+// call and ignore allow rules from `allowedTools`; only deny rules from
+// `disallowedTools` still apply under that mode. Same mechanism, reused
+// here verbatim.
+//
+// Deliberately no carve-out for a known-sku removal/adjustment request
+// (e.g. "remove the oat milk from my cart" right after a get_cart call) --
+// a blanket deny, not a narrower one, per explicit instruction. If that
+// turns out to be annoying in practice, it gets designed as its own narrow
+// feature later, not bolted on here as an exception that reopens the same
+// structural gap this exists to close.
+const STAPLES_DISALLOWED_TOOLS = ["set_cart_quantity"];
+
 function writeOutput(output: ContainerOutput): void {
   console.log(OUTPUT_START_MARKER);
   console.log(JSON.stringify(output));
@@ -82,6 +111,9 @@ async function main(): Promise<void> {
     "Grep",
     ...remoteServerNames.map((name) => `mcp__${name}__*`),
   ];
+  const disallowedTools = remoteServerNames.includes("staples")
+    ? STAPLES_DISALLOWED_TOOLS.map((tool) => `mcp__staples__${tool}`)
+    : [];
 
   let result: string | null = null;
   let newSessionId: string | undefined;
@@ -96,6 +128,7 @@ async function main(): Promise<void> {
         cwd: "/workspace/group",
         resume: input.sessionId,
         allowedTools,
+        disallowedTools,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         settingSources: ["project"],

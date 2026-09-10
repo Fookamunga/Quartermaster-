@@ -972,6 +972,65 @@ guild's channels), never creates either.
       left are ones where nothing is actually being added: `tier: "none"`
       (single-item, nothing resolved) and `already_stocked: true`
       (recipe, no restock needed) — never "the match looked obvious."
+    - **`set_cart_quantity` is fully denylisted from the agent, both cold
+      and warm — a structural close, not a second prompt-level fix layered
+      on the first.** The confirm-before-write fix above is itself just a
+      prompt instruction, and a prompt instruction is exactly what the
+      "skip confirmation for an obvious match" carve-out was too — nothing
+      stopped a future phrasing or prompt edit from having the model call
+      `set_cart_quantity` directly again, the same class of bug that
+      motivated deregistering woolies-mcp from the agent entirely, just
+      recurring one layer up. Closed the same way: `set_cart_quantity`
+      added to `disallowedTools` (`STAPLES_DISALLOWED_TOOLS` in both
+      `container/agent-runner/src/index.ts` and `warmSession.ts`), a
+      blanket deny with no carve-out for a known-sku removal/adjustment
+      request — a deliberate choice, not an oversight; if that turns out
+      to be annoying in practice it gets designed as its own feature later,
+      not bolted on as an exception that reopens the gap. Confirmed via
+      real transcript evidence, not just config: a prompt designed to make
+      the agent want a direct write (a known-sku removal request) produced
+      no `mcp__staples__set_cart_quantity` tool_use anywhere in the
+      transcript at all — not even a failed attempt, unlike the
+      woolies-mcp case, where the model's first instinct was still to try
+      and get a runtime error. `candidateReactions.ts`'s own write path is
+      a plain host-side MCP client call (`mcpClient.ts`'s `callTool`)
+      triggered by a real Discord reaction, never an Agent SDK `query()`
+      session — completely unaffected by this deny list, confirmed by
+      re-testing the "lime" and normal-add cases immediately afterward
+      with no regression.
+      - **Real, immediate consequence, not a hypothetical**: this closed
+        the *only* path removal ever had. Before this fix, "remove X" only
+        "worked" via the agent calling `set_cart_quantity(sku, 0)`
+        directly — the identical unconfirmed-write pattern as the "lime"
+        bug, just for removal instead of addition. With that path denied
+        and no equivalent confirm-based removal flow yet built, a removal
+        request dead-ended in an honest refusal ("the cart-write tool
+        isn't present in this session's actual tool set at all") with no
+        way forward — confirmed live, not assumed, before this gap was
+        closed by the removal-confirmation flow below.
+    - **Removal confirmation, mirroring the add flow exactly, closing that
+      gap.** `CandidateOptions` gained an optional `action?: "add" |
+      "remove"` field (`types.ts`), defaulting to `"add"` wherever absent
+      so every already-deployed add-flow entry keeps working identically
+      with zero prompt change -- verified live, not just by reasoning about
+      the default, by re-running the "lime" and normal-add cases after this
+      change with no observed difference. `postAndTrackCandidates` takes
+      `action` as a final parameter (default `"add"`); `handleCandidateReaction`
+      derives `quantity` from it (`1` to add, `0` -- `set_cart_quantity`'s own
+      "0 removes it" -- to remove) instead of the old hardcoded `1`, and
+      varies its reply wording ("Added to cart" vs. "Removed from cart";
+      "Skipped -- nothing was added/removed"). Candidates for a removal are
+      sourced from a real `get_cart` call and matched against actual cart
+      line items by name -- never a fresh product search, and never a
+      guessed sku -- with the exact same three-way shape as an add:
+      no match -> say so plainly, nothing to confirm; exactly one matching
+      line -> `top_pick` (✅-only); more than one -> `other_candidates`
+      (numbered). `best_value` is always `null` for a `"remove"` entry --
+      there's no best-value concept when removing, only which real line to
+      act on. Same execution guarantee as an add: the actual write only
+      ever happens from `candidateReactions.ts`'s reaction handler, never
+      from the agent's own tool-use turn -- `set_cart_quantity` stays
+      denylisted with no exception carved out for removal either.
 - Session-ID resumption for conversation continuity across separate cold calls
   (save session ID, pass `--resume <id>` next time) — new addition, not in the old
   code, build it in from the start.

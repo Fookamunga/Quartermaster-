@@ -221,6 +221,7 @@ async function handleMessage(message: Message): Promise<void> {
           candidateOptions.top_pick,
           candidateOptions.other_candidates,
           candidateOptions.best_value,
+          candidateOptions.action ?? "add",
         ).catch((err) => logger.error("Failed to post candidate options", { err: String(err) }));
       }
     }

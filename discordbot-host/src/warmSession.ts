@@ -121,6 +121,22 @@ function createPromptQueue(): {
   };
 }
 
+// Kept in sync by hand with the identical constant in
+// container/agent-runner/src/index.ts (a separate build, so not a shared
+// import). See that file's comment for the full reasoning: a prompt-level
+// "always confirm via a reaction" instruction is not a structural
+// guarantee, so set_cart_quantity is denied to the agent entirely -- the
+// only place a cart write may originate is candidateReactions.ts's own
+// handleCandidateReaction (a plain host-side MCP client call triggered by a
+// real Discord reaction, not an agent tool-use turn, and therefore
+// unaffected by this deny list). Passed as `disallowedTools`, not
+// `allowedTools` -- confirmed live in the cold path that permissionMode:
+// "bypassPermissions" (this session also uses it, below) makes the SDK
+// auto-approve every tool call and ignore allow rules; only deny rules
+// still apply under that mode. Deliberately no carve-out for a known-sku
+// removal/adjustment request -- a blanket deny, not a narrower one.
+const STAPLES_DISALLOWED_TOOLS = ["set_cart_quantity"];
+
 function warmMcpServers(): Record<string, McpServerConfig> {
   // Staples-host only -- the only MCP server any agent session this codebase
   // constructs ever registers, cold or warm. woolies-mcp is never handed to
@@ -214,6 +230,9 @@ function startWarmSession(channelKey: ChannelKey): WarmSessionState {
     "Grep",
     ...remoteServerNames.map((name) => `mcp__${name}__*`),
   ];
+  const disallowedTools = remoteServerNames.includes("staples")
+    ? STAPLES_DISALLOWED_TOOLS.map((tool) => `mcp__staples__${tool}`)
+    : [];
   const model = process.env.CLAUDE_MODEL || undefined;
 
   const queue = createPromptQueue();
@@ -224,6 +243,7 @@ function startWarmSession(channelKey: ChannelKey): WarmSessionState {
       ...(model ? { model } : {}),
       cwd: workspaceDir,
       allowedTools,
+      disallowedTools,
       // permissionMode: "bypassPermissions" (with or without the redundant
       // allowDangerouslySkipPermissions) hits the CLI's own root guard --
       // isRootOutsideDeliberateSandbox() in the bundled CLI -- which refuses

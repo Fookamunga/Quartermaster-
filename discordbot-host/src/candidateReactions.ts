@@ -57,6 +57,7 @@ interface PendingCandidates {
   topPick: CandidateOption | null;
   otherCandidates: CandidateOption[];
   bestValue: CandidateOption | null;
+  action: "add" | "remove";
   createdAt: string;
 }
 
@@ -78,6 +79,9 @@ function save(store: PendingCandidatesStore): void {
  * act on. Truncates otherCandidates to MAX_OTHER_CANDIDATES defensively
  * (logging a warning) rather than trusting the caller never to exceed it --
  * see this file's header comment for why that should be rare in practice.
+ *
+ * `action` defaults to "add" -- every call site written before the removal-
+ * confirmation flow existed omits it and keeps behaving identically.
  */
 export async function postAndTrackCandidates(
   channelId: string,
@@ -85,6 +89,7 @@ export async function postAndTrackCandidates(
   topPick: CandidateOption | null,
   otherCandidates: CandidateOption[],
   bestValue: CandidateOption | null,
+  action: "add" | "remove" = "add",
 ): Promise<{ messageId: string }> {
   let truncated = otherCandidates;
   if (otherCandidates.length > MAX_OTHER_CANDIDATES) {
@@ -118,6 +123,7 @@ export async function postAndTrackCandidates(
     topPick,
     otherCandidates: truncated,
     bestValue,
+    action,
     createdAt: new Date().toISOString(),
   };
   save(pending);
@@ -125,6 +131,7 @@ export async function postAndTrackCandidates(
   logger.info("Candidate options posted and tracked", {
     messageId: message.id,
     channelId,
+    action,
     hasTopPick: !!topPick,
     otherCount: truncated.length,
     hasBestValue: !!bestValue,
@@ -187,10 +194,18 @@ export async function handleCandidateReaction(
     return;
   }
 
+  // action defaults to "add" for entries persisted before this field existed
+  // (none should remain in practice -- pending entries don't survive a
+  // restart across a deploy that changes the shape -- but never crash on an
+  // old record instead of treating it as "add", the same default the type
+  // itself uses).
+  const action = entry.action ?? "add";
+
   if (emojiName === DECLINE_EMOJI) {
     delete pending[messageId];
     save(pending);
-    await message.reply("Skipped — nothing was added to the cart.").catch((err) =>
+    const declineVerb = action === "remove" ? "removed from" : "added to";
+    await message.reply(`Skipped — nothing was ${declineVerb} the cart.`).catch((err) =>
       logger.error("Failed to send decline confirmation", { err: String(err), messageId }),
     );
     return;
@@ -205,25 +220,32 @@ export async function handleCandidateReaction(
   // decision was already made by the reaction, nothing left to reason
   // about. Reuses the same tool the typed-reply flow calls (via the
   // agent), not a separate cart-write code path -- staples-host resolves
-  // the purchasing unit itself, so no pricingUnit is needed here.
+  // the purchasing unit itself, so no pricingUnit is needed here. quantity
+  // is the only thing that differs between add and remove: 1 to add
+  // (unchanged from before this field existed), 0 to remove the line
+  // entirely (set_cart_quantity's own "0 removes it" semantics).
+  const quantity = action === "remove" ? 0 : 1;
+  const verbPast = action === "remove" ? "Removed from cart" : "Added to cart";
+  const verbInfinitive = action === "remove" ? "remove" : "add";
+
   try {
     const result = await callTool("discordbot-candidate-reactions", STAPLES_HOST_URL, "set_cart_quantity", {
       sku: chosen.sku,
-      quantity: 1,
+      quantity,
     });
     if (result.isError) {
       throw new Error(toolResultText(result));
     }
     delete pending[messageId];
     save(pending);
-    await message.reply(`Added to cart: ${chosen.name}`).catch((err) =>
-      logger.error("Failed to send add-to-cart confirmation", { err: String(err), messageId }),
+    await message.reply(`${verbPast}: ${chosen.name}`).catch((err) =>
+      logger.error("Failed to send cart-write confirmation", { err: String(err), messageId }),
     );
-    logger.info("Candidate reaction confirmed", { messageId, sku: chosen.sku });
+    logger.info("Candidate reaction confirmed", { messageId, sku: chosen.sku, action });
   } catch (err) {
-    logger.error("Failed to set cart quantity for candidate reaction", { err: String(err), messageId });
+    logger.error("Failed to set cart quantity for candidate reaction", { err: String(err), messageId, action });
     await message
-      .reply(`Failed to add ${chosen.name} to the cart: ${String(err)}. React the same way again to retry.`)
+      .reply(`Failed to ${verbInfinitive} ${chosen.name}${action === "remove" ? " from" : " to"} the cart: ${String(err)}. React the same way again to retry.`)
       .catch(() => {});
     // Leave the pending entry in place so removing + re-adding the reaction
     // can retry rather than silently losing the resolved action -- same

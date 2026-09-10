@@ -52,8 +52,18 @@ export interface PendingActionItem {
 // best_value is always null for a recipe-sourced entry -- build_shopping_list
 // never computes one (removed entirely after a real production timeout; see
 // CLAUDE.md's "Scale fix" history). Not something this extension reintroduces.
+//
+// `action` distinguishes an add confirmation from a removal one -- added for
+// the removal-confirmation flow (see the workspace CLAUDE.md's "Removing
+// from the Cart" section) without touching the add flow's own behavior at
+// all: optional, defaulting to "add" wherever it's absent, so every
+// already-deployed add-flow entry (which never included this field) keeps
+// working identically with zero prompt change. `best_value` is always null
+// for a `"remove"` entry -- there's no best-value concept when removing,
+// only which real cart line to act on.
 export interface CandidateOptions {
   summary: string;
+  action?: "add" | "remove";
   top_pick: CandidateOption | null;
   other_candidates: CandidateOption[];
   best_value: CandidateOption | null;
