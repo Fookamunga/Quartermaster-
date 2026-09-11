@@ -70,4 +70,20 @@ export interface Database {
   // inside that hour) and re-posting after a restart. Null until the first
   // report ever sends. See weeklyReportSentry.ts.
   lastWeeklyReportSentAt: string | null;
+  // ISO datetime (UTC, exactly as woolies-mcp's get_purchase_history returns
+  // it in `placedAt`) of the most recently processed order -- the
+  // client-side incremental-fetch watermark. get_purchase_history has no
+  // real server-side pagination (confirmed live: it always returns its full
+  // available window), so this is what keeps a repeat sync cheap and
+  // idempotent instead of re-processing every order every time. Null until
+  // the first sync ever runs. See purchaseHistorySync.ts.
+  lastPurchaseHistorySyncedAt: string | null;
+  // NZ-local ISO date (YYYY-MM-DD) the *scheduled* weekly sync last actually
+  // ran successfully -- distinct from lastPurchaseHistorySyncedAt (which
+  // tracks real order data, not when the job ran): prevents the scheduled
+  // sentry from re-running within the same Sunday-16:00-NZ hour or after a
+  // restart, same dedup pattern as lastWeeklyReportSentAt. A manual
+  // sync_purchase_history call never touches this field -- only the
+  // scheduled sentry does. See purchaseHistorySyncSentry.ts.
+  lastPurchaseHistoryScheduledSyncDate: string | null;
 }

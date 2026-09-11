@@ -1,11 +1,16 @@
 import { findBestItemMatch } from "../fuzzy.js";
 import { recomputeItemSummary } from "../replenishment.js";
 import { newEventId } from "../storage.js";
-import type { Database } from "../types.js";
+import type { Database, PurchaseSource } from "../types.js";
 
 export interface OrderLineItem {
   name: string;
   quantity: number;
+  // Real Woolworths SKU, when the source structurally provides one --
+  // currently only purchaseHistorySync.ts's get_purchase_history-sourced
+  // lines do. receipt_scan/order-text callers omit this and get null, same
+  // as before this field existed (see PurchaseEvent.sku).
+  sku?: string | null;
 }
 
 export interface RecordedLine {
@@ -43,6 +48,7 @@ export function recordOrderLines(
   purchaseDate: string,
   orderReference: string | null,
   rawRefFor: (line: string) => string | null,
+  source: PurchaseSource = "receipt_scan",
 ): RecordLinesResult {
   const alreadyRecordedItemIds = new Set(
     orderReference
@@ -56,7 +62,7 @@ export function recordOrderLines(
   const already_recorded: RecordedLine[] = [];
   const unmatched: string[] = [];
 
-  for (const { name: line, quantity } of items) {
+  for (const { name: line, quantity, sku } of items) {
     const item = findBestItemMatch(db.items, line);
     if (!item) {
       unmatched.push(line);
@@ -72,7 +78,7 @@ export function recordOrderLines(
       event_id: newEventId(),
       item_id: item.item_id,
       date: purchaseDate,
-      source: "receipt_scan",
+      source,
       raw_ref: rawRefFor(line),
       order_reference: orderReference,
       // The extracted line text itself, e.g. "Mainland Cheese Edam 500g" --
@@ -80,7 +86,7 @@ export function recordOrderLines(
       // (same for every line in the order, so it can't identify which
       // specific product this event was).
       product_name: line,
-      sku: null,
+      sku: sku ?? null,
       quantity,
       created_at: new Date().toISOString(),
     });

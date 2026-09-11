@@ -17,7 +17,9 @@ import { registerRecordPurchase } from "./tools/recordPurchase.js";
 import { registerRemoveStaple } from "./tools/removeStaple.js";
 import { registerSetCartQuantity } from "./tools/setCartQuantity.js";
 import { registerSuggestAlternatives } from "./tools/suggestAlternatives.js";
+import { registerSyncPurchaseHistory } from "./tools/syncPurchaseHistory.js";
 import { registerUpdateStaple } from "./tools/updateStaple.js";
+import { startPurchaseHistorySyncSentry } from "./purchaseHistorySyncSentry.js";
 import { startWeeklyReportSentry } from "./weeklyReportSentry.js";
 
 function buildServer(): McpServer {
@@ -37,6 +39,7 @@ function buildServer(): McpServer {
   registerCheckRestockNeeded(server);
   registerGetCart(server);
   registerSetCartQuantity(server);
+  registerSyncPurchaseHistory(server);
   return server;
 }
 
@@ -157,6 +160,7 @@ app.delete("/mcp/:token", (_req, res) => {
 app.listen(PORT, () => {
   console.log(`staples-host listening on port ${PORT}`);
   startWeeklyReportSentry();
+  startPurchaseHistorySyncSentry();
 });
 
 process.on("SIGINT", () => process.exit(0));

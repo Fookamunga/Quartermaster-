@@ -85,7 +85,8 @@ queries. Only staples-host touches this volume.
   MCP tools below), from Discord or Claude mobile/desktop, not a synced
   external document.
 - staples-host calls woolies-mcp directly for narrow, read-only reasons —
-  order-history sync (once Adrian's API fix lands), `suggest_alternatives`'
+  order-history sync (`sync_purchase_history`/`purchaseHistorySync.ts`, live
+  now — see below), `suggest_alternatives`'
   product-name resolution, and `build_shopping_list`'s Tier 2/3 fallback
   (`get_cart`, `search_products`) when an ingredient has no purchase-history
   top pick (see MCP tools below) — never for anything that writes to the cart
@@ -113,11 +114,12 @@ queries. Only staples-host touches this volume.
   product_name (the specific product text as extracted from the source, e.g.
   "Mainland Cheese Edam 500g" — distinct from `item_id`, which points at the
   generic staple, e.g. "Cheese"; null for events recorded before this field
-  existed, and for any future manual `record_purchase` call that doesn't
-  supply one), sku (a real Woolworths product SKU, when the source structurally
-  provides one — expected only from the future `order_history_api` source,
-  never reliably present on a scanned receipt or pasted order text, so
-  `receipt_scan` events always leave this null rather than guessing),
+  existed, and for any manual `record_purchase` call that doesn't supply
+  one), sku (a real Woolworths product SKU, when the source structurally
+  provides one — populated for `order_history_api` events, since
+  `get_purchase_history` returns one per line; never reliably present on a
+  scanned receipt or pasted order text, so `receipt_scan` events always
+  leave this null rather than guessing),
   quantity (units purchased; every write path sets a concrete number,
   defaulting to 1 when the source doesn't determine one — null only appears
   on events recorded before this field existed. Feeds the learned restock
@@ -484,6 +486,19 @@ queries. Only staples-host touches this volume.
   as-is by discordbot-host's own host-side pending-actions executor,
   `pendingActions.ts` — an unrelated, pre-existing direct call that was
   never routed through an agent session and needed no change here).
+- `sync_purchase_history()` — on-demand trigger for the order-history sync
+  described below (`purchaseHistorySync.ts`). Reconciles any Woolworths
+  order placed since the last sync into `purchase_events`, via the exact
+  same fuzzy-match-and-record path (`recordOrderLines`, shared with
+  `ingest_receipt`/`ingest_order_text`) those tools use, just sourced from
+  `get_purchase_history` instead of a photo or pasted text. Idempotent by
+  design — a second call with nothing new to sync costs one woolies-mcp
+  round trip and does no writes at all. Domain logic, not a Discord
+  concern: this tool exists on the same `mcp__staples__*` surface as every
+  other staples-host tool and is callable from any front end (Discord,
+  Claude mobile/desktop) exactly the same way. See below for the scheduled
+  job this tool shares its logic with, and the standing architecture rule
+  behind that split.
 **Replenishment logic:** new items start `seeded`, `status = not_due` until ≥2
 purchase events exist. What `replenishment_interval_days` actually means, and
 how status is computed from it, now depends on `interval_confidence`:
@@ -584,6 +599,107 @@ null and fall back to this weaker check instead — match `receipt_scan` and
 as authoritative when both exist. Unmatched API events fill gaps, not
 duplicates. Only used when an exact `order_reference` match isn't possible —
 not an equally-authoritative alternative to it.
+
+**Purchase-history sync (staples-host's own scheduled job, live now —
+`order_history_api` is no longer a future/unimplemented source).** Adrian's
+API fix landed: confirmed live via a direct diagnostic call against the real
+account that woolies-mcp's `get_purchase_history` tool now returns clean,
+complete data — 46 real completed orders spanning 2021-2026, every line
+item carrying a real non-null quantity (including fractional quantities for
+loose produce), and the tool's own `coverage` field explicitly confirming
+`complete: true`. (`get_order_history`, a separate woolies-mcp tool, is
+**not** used here — confirmed still broken, throwing a schema-validation
+error, `fulfilments.0.fulfilmentLocation: expected object, received null`,
+on a real account. `get_purchase_history` alone already carries everything
+this sync needs — reference, `placedAt`, per-line `sku`/`name`/`quantity` —
+so that bug doesn't block this.)
+
+- **Architecture: this is staples-host's own domain logic, not a
+  discordbot-host/Discord concern, full stop.** Per the project's standing
+  rule that Discord is a disposable front end core logic must never live
+  inside or depend on — the same reasoning behind the weekly report's own
+  direct-webhook design above — the scheduled sync (`purchaseHistorySyncSentry.ts`)
+  runs entirely inside staples-host's own process, started from its own
+  `index.ts` alongside `weeklyReportSentry.ts`. It shares no function calls
+  with that file in either direction; the two are coupled only by clock
+  time (see below). If Discord's bot token/API is unconfigured, down, or
+  disconnected, this sync still runs on schedule and completes
+  successfully — Discord involvement (or its absence) has no bearing on
+  whether the sync itself succeeds. This was a real correction made during
+  the build: the sync was initially, wrongly, pointed at
+  discordbot-host's own auth-failure-sentry pattern as a model to follow,
+  which would have put domain logic inside the disposable front end
+  exactly backwards from the rule above.
+- **Manual trigger is a staples-host tool, not a Discord command:**
+  `sync_purchase_history()` (documented in the MCP tools list above) runs
+  the identical reconciliation logic (`purchaseHistorySync.ts`'s
+  `syncPurchaseHistory()`) on demand, callable from Discord if that's
+  connected, or from Claude mobile/desktop, or any other front end —
+  never built exclusively for or routed through Discord.
+- **Incremental fetching is entirely client-side**, since
+  `get_purchase_history` has no real server-side pagination — confirmed
+  live it always returns its full available window regardless of any page
+  parameter (its own `coverage` field states this explicitly: "the site
+  ignores the page index"). Every sync fetches everything, then filters
+  client-side against `db.lastPurchaseHistorySyncedAt` (an ISO datetime
+  watermark — the `placedAt` of the most recently processed order) to
+  decide which orders are actually new. Verified live against the real
+  46-order account: a first run with no watermark processed all 46 orders;
+  an immediate second run against the identical data processed zero,
+  purely from the watermark filter, before ever reaching the per-line
+  matching step.
+- **Belt-and-braces dedup, not either/or:** each order that clears the
+  watermark filter is still run through `recordOrderLines()` — the exact
+  same per-line, order-reference-keyed dedup `ingest_receipt`/
+  `ingest_order_text` already use — so even a watermark reset, or a
+  deliberate re-sync, can't double-record a line. `recordOrderLines` was
+  generalized (not duplicated) for this: it now takes an optional `source`
+  (defaulting to `"receipt_scan"`, unchanged for its two existing callers)
+  and each line optionally carries a real `sku` — populated here, since
+  `get_purchase_history` structurally provides one (unlike a receipt/
+  order-text line, which never does — see `PurchaseEvent.sku`).
+- **Auth failure must surface as "the sync didn't run," never silently as
+  "nothing new to sync"** — a silent skip would look identical to a
+  genuinely up-to-date sync while quietly never recording real purchases,
+  corrupting the restock-rate data with no visible symptom. Before calling
+  `get_purchase_history` at all, the sync calls woolies-mcp's `auth_status`
+  tool (confirmed live shape: `{ accountToolsUsable: boolean,
+  cookieExpiresAt?: string, hint: string }`); if `accountToolsUsable` is
+  false, the sync stops immediately, reports the failure explicitly, and —
+  critically — does **not** advance the watermark, so the next successful
+  run picks up exactly where the last successful one left off. The same
+  fail-closed handling applies to a `get_purchase_history` call that itself
+  fails or returns an unparseable response: it throws rather than degrading
+  to an empty order list, since an empty list is indistinguishable from
+  "truly nothing new."
+- **Scheduling:** `purchaseHistorySyncSentry.ts` checks NZ local time every
+  `PURCHASE_HISTORY_SYNC_CHECK_INTERVAL_MS` (default 15 min, same pattern
+  as the weekly report's own check) and fires once the window hits Sunday
+  **16:00 NZ — one hour before** the weekly report's own 17:00 NZ post.
+  Chosen deliberately so the report reflects freshly-synced data, without
+  the two files calling into each other — if the sync fails, or Discord is
+  down that week, the report still runs on its own independent schedule
+  against whatever data already exists; a stale report is a separate,
+  acceptable failure mode from "the sync didn't run." A
+  `lastPurchaseHistoryScheduledSyncDate` field (NZ-local date, distinct
+  from the `lastPurchaseHistorySyncedAt` order-timestamp watermark) guards
+  against double-running within the same hour or after a restart — same
+  dedup pattern as `lastWeeklyReportSentAt`, and, like that field, never
+  touched by a manual `sync_purchase_history` call, only by the scheduled
+  sentry itself. `PURCHASE_HISTORY_SYNC_TEST_MODE=true` runs one sync
+  immediately at startup, same convention as discordbot-host's
+  `NEVER_TRACKED_TEST_MODE` — only changes *when* the check runs, never
+  the dedup logic itself.
+- **Verified locally against the real account before shipping, not just by
+  reasoning about the code:** an isolated local staples-host instance
+  (throwaway local data directory, real `WOOLIES_MCP_URL`) seeded with a
+  few staples plausibly matching real purchase history ran the sync twice.
+  First run: 46 orders seen, 46 processed, 57 lines matched across the
+  seeded staples, watermark advanced to the latest order's `placedAt`.
+  Second run against the identical live data: 46 orders seen (no
+  pagination to skip), 0 processed, 0 matched, 0 new purchase_events —
+  confirming the incremental filter (not just the per-line dedup) is what
+  makes a repeat sync a true no-op.
 
 **Weekly restock report (direct Discord webhook, no discordbot-host
 involvement):** staples-host's own scheduled job — `weeklyReportSentry.ts` —
@@ -1108,9 +1224,14 @@ not faster, and not a guarantee every burst completes within any particular
 time budget.
 
 ## Open items to confirm before/during build
-- Shape of the fixed order-history API (fields, pagination, date format) — gates
-  staples-host's order-history calls and the reconciliation pass
+- ~~Shape of the fixed order-history API (fields, pagination, date format)~~
+  — resolved: confirmed live, `get_purchase_history` returns clean, complete
+  data with no real pagination (see the Purchase-history sync section
+  above); the order-history sync is built and live.
 - Exact reconciliation window/logic once both purchase-event sources exist for real
+  — still open: the `order_history_api` sync is live, but the ±2-day
+  date-proximity fallback (for sources with no `order_reference`) hasn't
+  been exercised against real dual-source data yet
 - Whether any host-side actions currently done via the old IPC tools genuinely need
   Claude in the loop, or can just be discordbot-host functions
 - **Pre-existing status-derivation discrepancy, found while building

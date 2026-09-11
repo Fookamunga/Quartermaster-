@@ -78,11 +78,29 @@ export const WEEKLY_REPORT_CHECK_INTERVAL_MS = process.env.WEEKLY_REPORT_CHECK_I
   : 15 * 60 * 1000;
 
 // woolies-mcp's own MCP endpoint (the same Funnel URL used elsewhere, e.g.
-// https://<funnel-host>/mcp/<token>). Used only by suggest_alternatives, to
+// https://<funnel-host>/mcp/<token>). Used by suggest_alternatives (to
 // re-resolve a historical product_name to a live product via woolies-mcp's
-// own search_products tool -- staples-host's one narrow, read-only exception
-// to never calling woolies-mcp itself. See CLAUDE.md's Ownership boundaries.
-// Null means suggest_alternatives can't resolve anything and returns an
-// empty list rather than guessing -- never a hard failure for the rest of
-// staples-host.
+// own search_products tool) and by purchaseHistorySync.ts (get_purchase_history,
+// auth_status) -- staples-host's narrow, specifically-scoped exceptions to
+// never calling woolies-mcp itself otherwise. See CLAUDE.md's Ownership
+// boundaries. Null means these degrade gracefully (suggest_alternatives
+// returns an empty list; the purchase-history sync reports a clear failure
+// rather than guessing) -- never a hard failure for the rest of staples-host.
 export const WOOLIES_MCP_URL = process.env.WOOLIES_MCP_URL ?? null;
+
+// How often the purchase-history-sync sentry checks whether it's currently
+// the scheduled sync window (Sunday 16:00 NZ, one hour before the weekly
+// restock report's own 17:00 NZ window -- see purchaseHistorySyncSentry.ts).
+// Same 15-minute default and reasoning as WEEKLY_REPORT_CHECK_INTERVAL_MS.
+export const PURCHASE_HISTORY_SYNC_CHECK_INTERVAL_MS = process.env
+  .PURCHASE_HISTORY_SYNC_CHECK_INTERVAL_MS
+  ? Number(process.env.PURCHASE_HISTORY_SYNC_CHECK_INTERVAL_MS)
+  : 15 * 60 * 1000;
+
+// Runs one sync immediately at startup, in addition to the normal scheduled
+// window -- lets the sync be verified on demand instead of waiting for
+// Sunday 16:00 NZ. Same convention as discordbot-host's
+// NEVER_TRACKED_TEST_MODE: only changes *when* the check runs, never the
+// once-per-day dedup itself (see purchaseHistorySyncSentry.ts).
+export const PURCHASE_HISTORY_SYNC_TEST_MODE =
+  process.env.PURCHASE_HISTORY_SYNC_TEST_MODE === "true";

@@ -5,7 +5,13 @@ import { DATA_DIR, DB_PATH } from "./config.js";
 import type { Database, Item, PurchaseEvent } from "./types.js";
 
 function emptyDb(): Database {
-  return { items: [], purchase_events: [], lastWeeklyReportSentAt: null };
+  return {
+    items: [],
+    purchase_events: [],
+    lastWeeklyReportSentAt: null,
+    lastPurchaseHistorySyncedAt: null,
+    lastPurchaseHistoryScheduledSyncDate: null,
+  };
 }
 
 // Serializes writes so concurrent tool calls can't interleave read-modify-write
@@ -21,6 +27,8 @@ async function loadDb(): Promise<Database> {
       items: parsed.items ?? [],
       purchase_events: parsed.purchase_events ?? [],
       lastWeeklyReportSentAt: parsed.lastWeeklyReportSentAt ?? null,
+      lastPurchaseHistorySyncedAt: parsed.lastPurchaseHistorySyncedAt ?? null,
+      lastPurchaseHistoryScheduledSyncDate: parsed.lastPurchaseHistoryScheduledSyncDate ?? null,
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {

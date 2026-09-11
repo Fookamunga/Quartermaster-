@@ -449,3 +449,109 @@ export async function searchVarietyFirstPageOnly(query: string): Promise<Woolies
   const { firstPage } = await broadenVarietyQuery(query);
   return firstPage;
 }
+
+export interface PurchaseHistoryOrderItem {
+  sku: string;
+  name: string;
+  quantity: number;
+}
+
+export interface PurchaseHistoryOrder {
+  reference: string;
+  placedAt: string; // ISO datetime, UTC (exactly as woolies-mcp returns it)
+  status: string;
+  items: PurchaseHistoryOrderItem[];
+}
+
+/**
+ * Fetch Woolworths' completed-order history via woolies-mcp's own
+ * get_purchase_history tool -- the sole data source for
+ * purchaseHistorySync.ts's reconciliation into staples-host's own
+ * purchase_events (see CLAUDE.md's order-history sync section). Confirmed
+ * live against the real account: no real server-side pagination exists --
+ * the tool always returns its full available window (46 real orders,
+ * spanning 2021-2026, at the time this was verified) and its own `coverage`
+ * field says so explicitly ("the site ignores the page index"). So this
+ * always fetches everything; incremental behavior is entirely a client-side
+ * filter against a stored watermark in purchaseHistorySync.ts, not a
+ * paginated request here.
+ *
+ * Deliberately not woolies-mcp's separate get_order_history tool -- confirmed
+ * live (a direct diagnostic call) that it currently throws a schema-
+ * validation error on this real account
+ * (`fulfilments.0.fulfilmentLocation: expected object, received null`),
+ * while get_purchase_history returns clean, complete data covering
+ * everything this sync needs (reference, placedAt, per-line sku/name/
+ * quantity, with real non-null quantities throughout).
+ *
+ * Throws on a genuine connection/protocol failure OR an unparseable/errored
+ * tool response -- never silently returns an empty order list, since that
+ * would be indistinguishable from a genuinely up-to-date sync (see
+ * CLAUDE.md's auth-failure note: a failed fetch must surface as "sync didn't
+ * run," not "nothing new").
+ */
+export async function getPurchaseHistory(): Promise<PurchaseHistoryOrder[]> {
+  const parsed = await callWooliesTool("get_purchase_history", { filter: "PAST" });
+  if (!parsed) {
+    throw new Error("get_purchase_history returned no usable response (isError or unparseable)");
+  }
+
+  const rawOrders = Array.isArray(parsed.orders) ? (parsed.orders as Array<Record<string, unknown>>) : [];
+  const orders: PurchaseHistoryOrder[] = [];
+  for (const raw of rawOrders) {
+    if (typeof raw.reference !== "string" || typeof raw.placedAt !== "string") continue;
+
+    const rawItems = Array.isArray(raw.items) ? (raw.items as Array<Record<string, unknown>>) : [];
+    const items: PurchaseHistoryOrderItem[] = [];
+    for (const item of rawItems) {
+      if (typeof item.sku !== "string" || typeof item.name !== "string") continue;
+      items.push({
+        sku: item.sku,
+        name: item.name,
+        quantity: typeof item.quantity === "number" ? item.quantity : 1,
+      });
+    }
+
+    orders.push({
+      reference: raw.reference,
+      placedAt: raw.placedAt,
+      status: typeof raw.status === "string" ? raw.status : "COMPLETED",
+      items,
+    });
+  }
+  return orders;
+}
+
+export interface WooliesAuthStatus {
+  accountToolsUsable: boolean;
+  cookieExpiresAt: string | null;
+  hint: string | null;
+}
+
+/**
+ * Woolworths session health, via woolies-mcp's own auth_status tool --
+ * confirmed live shape: `{ accountToolsUsable: boolean, cookieExpiresAt?:
+ * string, hint: string }`. Used by purchaseHistorySync.ts to distinguish
+ * "genuinely nothing new" from "the session is dead and get_purchase_history
+ * would silently look like zero orders" -- an auth failure during the sync
+ * must be surfaced the same way discordbot-host's own auth-failure sentry
+ * already treats it, never as "no orders in this period" (which would
+ * silently advance the sync watermark past real, un-synced purchases). A
+ * failed auth_status call itself is treated as "not usable" -- fail closed,
+ * rather than letting the sync guess.
+ */
+export async function getAuthStatus(): Promise<WooliesAuthStatus> {
+  const parsed = await callWooliesTool("auth_status", {});
+  if (!parsed) {
+    return {
+      accountToolsUsable: false,
+      cookieExpiresAt: null,
+      hint: "auth_status call itself returned no usable response",
+    };
+  }
+  return {
+    accountToolsUsable: parsed.accountToolsUsable === true,
+    cookieExpiresAt: typeof parsed.cookieExpiresAt === "string" ? parsed.cookieExpiresAt : null,
+    hint: typeof parsed.hint === "string" ? parsed.hint : null,
+  };
+}

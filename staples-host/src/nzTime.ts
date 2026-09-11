@@ -23,3 +23,23 @@ export function nzWeekdayAndHour(): NzWeekdayHour {
   const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
   return { weekday, hour };
 }
+
+const NZ_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Pacific/Auckland",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/**
+ * Converts an arbitrary ISO datetime (e.g. woolies-mcp's UTC `placedAt`) to
+ * its NZ-local calendar date -- same reasoning as replenishment.ts's own
+ * todayIso(): a naive slice(0, 10) on a UTC timestamp gets the wrong date for
+ * roughly half of every NZ calendar day (NZ is UTC+12/+13). Used by
+ * purchaseHistorySync.ts to record each synced order's purchase_event under
+ * the date it was actually placed in NZ, not the UTC date the API stamps it
+ * with.
+ */
+export function nzDateFromIso(isoDatetime: string): string {
+  return NZ_DATE_FORMATTER.format(new Date(isoDatetime));
+}

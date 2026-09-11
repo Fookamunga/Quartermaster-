@@ -604,8 +604,8 @@ re-corrupt Salt/Butter in the gap between cleanup and deployment.
 
 ## Known open items (not yet resolved — see CLAUDE.md)
 
-- Order-history API sync (`woolies-mcp` → `staples-host`) isn't implemented —
-  blocked on the API fix landing.
 - Reconciliation between `receipt_scan` and `order_history_api` events isn't
   implemented — the exact matching window (~±2 days per CLAUDE.md) needs
-  confirming once both sources exist for real.
+  confirming once both sources exist for real. (The order-history sync
+  itself — `woolies-mcp` → `staples-host`, via `get_purchase_history` — is
+  now built and live; see CLAUDE.md's "Purchase-history sync" section.)
