@@ -91,15 +91,37 @@ async function backfillFromLiveSearch(
  * sequentially, not in parallel -- this is a single low-traffic household
  * service calling a shared external dependency; there's no need to open up
  * to 10 concurrent connections to woolies-mcp for one request.
+ *
+ * Resolves once per *distinct* product_name text, not once per event --
+ * repeat-buying the same product is the common case for a staple, and a
+ * repeated event is guaranteed to resolve identically (same input string,
+ * same deterministic searchTopProductFull result), so re-running the
+ * search is pure wasted latency, not a chance at a different answer. This
+ * was a real, user-visible bug, not just an optimization: confirmed live,
+ * "toilet paper"'s real history is 10 events across only 5 distinct
+ * product_name strings (one repeated 5x, one 2x) -- resolving all 10
+ * separately took 61s, blowing well past the warm session's 40s
+ * per-tool-call ceiling and surfacing to the user as "it timed out twice,
+ * I can't resolve it right now" for an item with nothing unusual about it
+ * except being purchased often.
  */
 export async function rankAlternatives(events: PurchaseEvent[]): Promise<RankedAlternativesResult> {
   const window = events.slice(0, HISTORY_WINDOW);
+
+  const byName = new Map<string, PurchaseEvent[]>();
+  for (const event of window) {
+    const nameKey = (event.product_name as string).trim().toLowerCase();
+    const group = byName.get(nameKey);
+    if (group) group.push(event);
+    else byName.set(nameKey, [event]);
+  }
+
   const candidates = new Map<string, Candidate>();
 
-  for (const event of window) {
+  for (const group of byName.values()) {
     let resolved: WooliesProductFull | null;
     try {
-      resolved = await searchTopProductFull(event.product_name as string);
+      resolved = await searchTopProductFull(group[0].product_name as string);
     } catch {
       // A genuine connection/protocol failure resolving this one historical
       // name -- treated the same as "no longer in the catalogue" (skip this
@@ -109,13 +131,14 @@ export async function rankAlternatives(events: PurchaseEvent[]): Promise<RankedA
     }
     if (!resolved) continue;
 
+    const mostRecentInGroup = group.reduce((max, e) => (e.date > max ? e.date : max), group[0].date);
     const key = resolved.variantKey;
     const existing = candidates.get(key);
     if (existing) {
-      existing.frequency += 1;
-      if (event.date > existing.mostRecentDate) existing.mostRecentDate = event.date;
+      existing.frequency += group.length;
+      if (mostRecentInGroup > existing.mostRecentDate) existing.mostRecentDate = mostRecentInGroup;
     } else {
-      candidates.set(key, { product: resolved, frequency: 1, mostRecentDate: event.date });
+      candidates.set(key, { product: resolved, frequency: group.length, mostRecentDate: mostRecentInGroup });
     }
   }
 

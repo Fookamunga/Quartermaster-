@@ -35,6 +35,22 @@ per-channel/group opt-in, never a fleet-wide switch:
   real-world API round-trip time. nanoclaw's own bridge started at 20s and had
   to be bumped to 35s after a real failure; don't re-derive that the hard way —
   start at 35-45s for any first-call-after-restart scenario.
+  - **A second, different-shaped real failure pushed discordbot-host's own
+    `WARM_MCP_TOOL_TIMEOUT_MS` from 40s to 100s — not a connection-handshake
+    cost this time, a genuinely slow tool call.** `suggest_alternatives` for
+    a heavily-purchased staple ("toilet paper," 10 real purchase events, some
+    referencing since-discontinued product variants) needs its Tier-1
+    history resolved *and* remaining candidate slots backfilled via a live
+    variety search — confirmed live at 61s and 71s across two real runs,
+    both well past the old 40s ceiling, surfacing to the user as a plain
+    "it timed out twice, I can't resolve it right now." `WARM_HEALTH_CHECK_TIMEOUT_MS`
+    (150s) and `WARM_PROMPT_TIMEOUT_MS` (240s) were bumped alongside it to
+    preserve the same "generously above" relationship and leave headroom for
+    one retry of a worst-case call without blowing the whole turn's budget.
+    See staples-host's `suggest_alternatives` entry below for the paired
+    dedup fix that reduces how often a call is this slow in the first place
+    — this timeout bump is what makes the *remaining*, still-real worst case
+    actually succeed rather than time out.
 - **Full custom-tool surface allowed, including MCP servers** — no need to strip
   MCP registration from a warm session or build a separate zero-MCP bridge
   architecture; that was a real but unnecessary workaround built before the
@@ -201,6 +217,24 @@ queries. Only staples-host touches this volume.
     lose track of which result is the ranked winner (see the workspace
     CLAUDE.md's ✅-marking convention, which depends on this being
     unambiguous).
+
+    **Resolution is deduped by `product_name` text before ever calling
+    `search_products`, not just by the resulting `sku` afterward — a real,
+    user-visible latency bug, not just an optimization.** A real household
+    very commonly re-buys the exact same product, so a 10-event window can
+    (and did) hold far fewer distinct `product_name` strings than events —
+    confirmed live, "toilet paper"'s real history is 10 events across only 5
+    distinct names (one repeated 5x). The original version resolved every
+    event separately regardless, even though a repeated identical string is
+    guaranteed to resolve identically — for that item this meant 10
+    sequential `search_products` round trips instead of 5, measured live at
+    61s total, comfortably past discordbot-host's warm-session per-tool-call
+    timeout (see that section below) and surfacing to the user as a plain
+    "I can't resolve it right now, it timed out twice." `rankAlternatives()`
+    now groups the window by normalized (trimmed, lowercased) `product_name`
+    first and resolves each distinct group once, applying the result to
+    every event in that group for frequency/recency purposes — same ranking
+    output, fewer real network calls.
   - **`"cart"` / `"search"`** (`tieredSearch.ts`, new): reached when
     `"history"` finds nothing — not a tracked staple, no purchase history
     with a `product_name`, or none of the historical names resolve to a live

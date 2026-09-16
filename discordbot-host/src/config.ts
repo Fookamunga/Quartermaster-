@@ -82,8 +82,26 @@ export const WOOLWORTHS_ORDERING_PERSISTENT_WORKER =
 // shipped with 20s and had to be bumped to 35s after a *real* (not
 // synthetic) failure -- start generous here instead of re-deriving that the
 // hard way. Deliberately not the arbitrary SDK default.
+//
+// Bumped from 40s to 100s after a second real failure, a different shape
+// than the fresh-connection-handshake case above: `suggest_alternatives`
+// for a heavily-purchased staple can legitimately take far longer than a
+// typical call, independent of any connection warm-up. Confirmed live for
+// "toilet paper" (10 real purchase events, several referencing since-
+// discontinued product variants) -- resolving its Tier-1 history and then
+// backfilling remaining candidates via a live variety search took 61s and
+// 71s across two real runs, both comfortably past the old 40s ceiling, so
+// the agent's own tool call timed out (twice, since it auto-retried) and
+// reported "I can't resolve it right now" for an item with nothing actually
+// wrong. rankAlternatives() was also fixed to dedupe repeat purchase events
+// by product_name text before resolving (was resolving all 10 events
+// separately even though only 5 distinct product names exist), a real
+// efficiency fix in its own right -- but the live-search backfill this item
+// still needs is the dominant remaining cost, so the timeout itself also
+// needs to reflect what a real worst-case item actually costs, not just
+// what a connection handshake costs.
 export const WARM_MCP_TOOL_TIMEOUT_MS = parseInt(
-  process.env.WARM_MCP_TOOL_TIMEOUT_MS || "40000",
+  process.env.WARM_MCP_TOOL_TIMEOUT_MS || "100000",
   10,
 );
 
@@ -92,16 +110,18 @@ export const WARM_MCP_TOOL_TIMEOUT_MS = parseInt(
 // WARM_MCP_TOOL_TIMEOUT_MS since the ping may itself involve a tool call
 // plus model latency on top of the connection handshake.
 export const WARM_HEALTH_CHECK_TIMEOUT_MS = parseInt(
-  process.env.WARM_HEALTH_CHECK_TIMEOUT_MS || "90000",
+  process.env.WARM_HEALTH_CHECK_TIMEOUT_MS || "150000",
   10,
 );
 
 // How long a normal (non-health-check) warm-session prompt waits for its
 // result before being treated as failed. Real shopping requests can chain
 // several tool calls in one turn, so this is longer than the health-check
-// budget.
+// budget -- and needs enough headroom above WARM_MCP_TOOL_TIMEOUT_MS for a
+// single retry of a worst-case (~100s) tool call without itself timing out
+// the whole turn.
 export const WARM_PROMPT_TIMEOUT_MS = parseInt(
-  process.env.WARM_PROMPT_TIMEOUT_MS || "180000",
+  process.env.WARM_PROMPT_TIMEOUT_MS || "240000",
   10,
 );
 
