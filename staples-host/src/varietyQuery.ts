@@ -16,6 +16,23 @@ function escapeRegExp(s: string): string {
  * Everyday One") still isn't a real shared category -- see
  * wooliesClient.ts's searchVariety() for the broadening step that handles
  * that, shared by both callers of this function.
+ *
+ * Also strips a bare "&" -- real product names often use it as a connector
+ * between two adjectives (e.g. "Thick & Large", "Thick & Creamy"), which is
+ * harmless while both flanking words are still present, but becomes a
+ * problem once searchVariety's word-count trimming works its way down to
+ * it: "&" occupies a word slot but the search backend can't match on it as
+ * content, so a query like "Thick &" effectively degrades to a single bare
+ * adjective ("Thick") while still *counting* as 2 words toward
+ * MIN_QUERY_WORDS. Confirmed live: "Sorbent Thick & Large Toilet Paper 8pk
+ * Silky White" trimmed down to "Thick &" this way, which matched 22
+ * completely unrelated products (yoghurt, aioli) purely because they also
+ * contain the word "Thick" -- surfaced as suggest_alternatives("toilet
+ * paper") reporting a fruit bread as its "best value" alternative. Without
+ * the bare "&", the same trimming floors out one step earlier at "Thick
+ * Large" instead, which stays genuinely paper/tissue-dominated (still not
+ * perfect -- see CLAUDE.md: this stays a best-effort heuristic, not a
+ * guarantee).
  */
 export function deriveVarietyQuery(name: string, brand: string | null): string {
   let s = name;
@@ -23,5 +40,6 @@ export function deriveVarietyQuery(name: string, brand: string | null): string {
     s = s.replace(new RegExp(`\\b${escapeRegExp(brand)}\\b`, "i"), "");
   }
   s = s.replace(/\b\d+(\.\d+)?\s*(g|kg|ml|l)\b/gi, "");
+  s = s.replace(/\s*&\s*/g, " ");
   return s.replace(/\s+/g, " ").trim();
 }

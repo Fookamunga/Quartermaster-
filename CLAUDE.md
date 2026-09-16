@@ -344,6 +344,36 @@ queries. Only staples-host touches this volume.
   cheapest-available claim** -- do not present or treat it as a stronger
   guarantee than that.
 
+  **A second, worse real failure of the same trimming logic: a bare "&" left
+  in the query degrades to a single generic adjective while still consuming
+  a whole word slot.** Confirmed live for real: `suggest_alternatives("toilet
+  paper")` reported `best_value` as **Vogels Fruit Bread** (and two Hansells
+  Yoghurt products as `other_candidates`) -- a complete category miss, worse
+  than the cheese/cracker case above (at least category-adjacent). Root
+  cause traced word-by-word against the real catalogue: "Sorbent Thick &
+  Large Toilet Paper 8pk Silky White" minus brand leaves "Thick & Large
+  Toilet Paper 8pk Silky White"; trimming from the end finds only 1-3
+  results at every level down to "Thick & Large" (3 results, genuinely
+  paper/tissue products -- Sorbent, Kleenex, Vevelle), then hits the
+  `MIN_QUERY_WORDS` floor at "Thick &", which returns 22 results -- but
+  "&" isn't real search content, so this is really just a bare "Thick"
+  query, matching anything with that word in its name regardless of
+  category. Since 22 >= `MIN_VARIETY_RESULTS`, the loop accepts it anyway --
+  the break condition is pure count, with no relevance check, and "Thick &"
+  crossing the threshold by accident is indistinguishable to the algorithm
+  from "Oat Milk" (the case this whole retry mechanism was built to fix)
+  genuinely crossing it on merit. Fixed in `deriveVarietyQuery()`
+  (`varietyQuery.ts`) by stripping a bare `&` up front, before any
+  trimming -- confirmed live this changes the toilet-paper floor query to
+  "Thick Large" instead, which returns 6 results, genuinely paper/tissue-
+  dominated (Sorbent, Kleenex, Vevelle) with only "Dash Hair Ties Elastic
+  Large Thick" (black/blonde) as remaining noise -- a real improvement, not
+  a complete fix (see above: this stays a best-effort heuristic). Re-ran the
+  original Otis oat-milk case after this change with no regression (`&`
+  never appears in that residual at all, so it's structurally unaffected) --
+  `get_best_value` for Otis's real sku still correctly returns So Good Oat
+  Milk No Added Sugar as cheapest.
+
   Parses each surviving candidate's `unitPrice` (a formatted string, e.g.
   `"$1.90 / 100G"` -- present on most products but not all, and its
   denomination varies by product), groups by denomination, and returns the
