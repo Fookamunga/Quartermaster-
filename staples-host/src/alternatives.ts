@@ -1,5 +1,6 @@
 import type { PurchaseEvent } from "./types.js";
 import { deriveVarietyQuery } from "./varietyQuery.js";
+import { hasSuspectWord } from "./varietyFilter.js";
 import { searchTopProductFull, searchVariety, type WooliesProductFull } from "./wooliesClient.js";
 
 // See CLAUDE.md's suggest_alternatives entry and the #woolworths-ordering
@@ -58,6 +59,17 @@ function toRankedAlternative(product: WooliesProductFull): RankedAlternative {
  * fabricates: a connection failure or a variety search that finds nothing
  * usable just means fewer than MAX_OTHER_CANDIDATES are shown, not a
  * fabricated filler.
+ *
+ * Also excludes a result if its name carries a `hasSuspectWord` hit against
+ * `topPick` -- a real, live gap, not a defensive addition: bestValue.ts
+ * already applied this exact filter when picking a best-value anchor, but
+ * this backfill (filling the *numbered* other_candidates list) had no
+ * equivalent check at all, so the same unrelated product it correctly
+ * excluded from best-value could still show up here instead. Confirmed
+ * live: "toilet paper" -> "Thick Large" backfill surfaced "Dash Hair Ties
+ * Elastic Large Thick" as two of five numbered candidates -- and in real
+ * use, one of them got picked by mistake, since a numbered list gives no
+ * signal that an entry is any less trustworthy than the others.
  */
 async function backfillFromLiveSearch(
   topPick: WooliesProductFull,
@@ -80,6 +92,7 @@ async function backfillFromLiveSearch(
   for (const r of results) {
     if (filled.length >= needed) break;
     if (alreadyShown.has(r.variantKey)) continue;
+    if (hasSuspectWord(r.name, topPick.name)) continue;
     filled.push(toRankedAlternative(r));
   }
   return filled;

@@ -367,12 +367,35 @@ queries. Only staples-host touches this volume.
   trimming -- confirmed live this changes the toilet-paper floor query to
   "Thick Large" instead, which returns 6 results, genuinely paper/tissue-
   dominated (Sorbent, Kleenex, Vevelle) with only "Dash Hair Ties Elastic
-  Large Thick" (black/blonde) as remaining noise -- a real improvement, not
-  a complete fix (see above: this stays a best-effort heuristic). Re-ran the
-  original Otis oat-milk case after this change with no regression (`&`
-  never appears in that residual at all, so it's structurally unaffected) --
-  `get_best_value` for Otis's real sku still correctly returns So Good Oat
-  Milk No Added Sugar as cheapest.
+  Large Thick" (black/blonde) as remaining noise. Re-ran the original Otis
+  oat-milk case after this change with no regression (`&` never appears in
+  that residual at all, so it's structurally unaffected) -- `get_best_value`
+  for Otis's real sku still correctly returns So Good Oat Milk No Added
+  Sugar as cheapest.
+
+  **The "Dash Hair Ties" residue above wasn't just accepted noise -- it was
+  a real, separate gap that caused a real mistaken cart-add once this
+  reached actual Discord use.** `hasSuspectWord`'s exclusion (originally
+  local to `bestValue.ts`) correctly kept "Dash Hair Ties Elastic..." out of
+  `best_value` -- confirmed, `best_value` for toilet paper landed correctly
+  on the toilet paper itself. But `alternatives.ts`'s `backfillFromLiveSearch`
+  (fills the *numbered* `other_candidates` slots from the same live search)
+  had no equivalent filter at all, so the identical unrelated product still
+  reached the numbered list -- and in real use, one of the two Dash Hair
+  Ties entries got picked and added to the cart by mistake, since a numbered
+  list gives no signal that one entry is less trustworthy than the others.
+  Fixed by moving `SUSPECT_WORDS`/`hasSuspectWord` into their own shared
+  module (`varietyFilter.ts`, imported by both `bestValue.ts` and
+  `alternatives.ts`) and applying the same exclusion inside
+  `backfillFromLiveSearch`, not just `findBestValue` -- both the ✅/💰 roles
+  and the numbered list now share one exclusion pass instead of two
+  independently-maintained ones. Also added `"elastic"` to the list itself,
+  since that's the word that actually identifies this real case. Confirmed
+  live after this change: all 5 `other_candidates` for "toilet paper" are
+  genuine paper/tissue products (Cotton Softs, Sorbent Hypoallergenic,
+  Quilton, Kleenex, Vevelle) with zero hair ties, and the Otis oat-milk case
+  still regresses cleanly (unaffected -- no suspect word in that result set
+  at all).
 
   Parses each surviving candidate's `unitPrice` (a formatted string, e.g.
   `"$1.90 / 100G"` -- present on most products but not all, and its

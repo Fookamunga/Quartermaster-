@@ -1,27 +1,11 @@
 import { deriveVarietyQuery } from "./varietyQuery.js";
+import { hasSuspectWord } from "./varietyFilter.js";
 import { searchVariety, searchVarietyFirstPageOnly, type WooliesProductFull } from "./wooliesClient.js";
 
 export interface BestValueResult {
   name: string;
   sku: string;
   pricePerUnit: string; // e.g. "$1.36/100g", already formatted for display
-}
-
-// Best-effort exclusion heuristic, not a guarantee -- see CLAUDE.md's
-// suggest_alternatives entry. A variety-wide search mixes genuinely
-// comparable products with superficially similar ones that happen to share
-// words (confirmed live: "edam cheese" returned cracker-and-cheese snack
-// combos alongside real cheese). There's no structural field to filter on
-// (all shared the same department in testing), so this excludes a result
-// only if its name contains one of these category-mixing words AND the top
-// pick's own name doesn't -- deliberately short and conservative rather
-// than an attempt at exhaustive category detection.
-const SUSPECT_WORDS = ["cracker", "crackers", "snack", "biscuit", "biscuits", "chip", "chips", "dip"];
-
-function hasSuspectWord(name: string, topPickName: string): boolean {
-  const topWords = new Set(topPickName.toLowerCase().split(/\W+/));
-  const nameWords = name.toLowerCase().split(/\W+/);
-  return nameWords.some((w) => SUSPECT_WORDS.includes(w) && !topWords.has(w));
 }
 
 function parseUnitPrice(unitPrice: string | null): { value: number; unit: string } | null {
