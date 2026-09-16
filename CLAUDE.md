@@ -1161,9 +1161,41 @@ guild's channels), never creates either.
   takes `--server <url>` exactly as documented): `Woolworths session is dead.
   Fix it from your PC: npm run login -- --server <woolies-mcp Funnel URL>`.
   Also applies to staples-host's order-history sync calls to woolies-mcp
-  (not yet implemented) — an auth failure there must be surfaced the same
-  way, not silently treated as "no orders in this period" (which would
-  corrupt the restock-rate data).
+  (`sync_purchase_history`/`purchaseHistorySync.ts`, live — see below) — an
+  auth failure there must be surfaced the same way, not silently treated as
+  "no orders in this period" (which would corrupt the restock-rate data).
+  - **Real bug, found live: a dead session was never actually alerting,
+    for 6+ days straight, because of how the failure itself is shaped.**
+    Investigating an unrelated report ("add toilet paper" resolving to
+    `tier: "none"`) led to discovering the real Woolworths session had been
+    dead since at least 2026-09-11 — confirmed directly by calling
+    `search_products`/`auth_status` against the live account, both
+    returning a GraphQL `AUTH_NOT_AUTHENTICATED` error. But
+    `woolies-health-state.json` still showed `lastKnownUsable: true,
+    lastAlertAt: null`, and the channel had never received the alert this
+    mechanism exists to send. Root cause: `auth_status` failing this way
+    comes back as a **tool-level error** (`isError: true`, a plain-text
+    GraphQL message, not the documented `{ accountToolsUsable: false, ... }`
+    JSON shape) — `checkOnce()` was parsing the response text as JSON
+    unconditionally, so this hit `JSON.parse` with a `SyntaxError`, which
+    landed in the outer `catch` alongside genuine connection failures
+    (`fetch failed`) and was silently logged and skipped, every 30 minutes,
+    ~280 times, never reaching the alerting logic at all. Fixed in
+    `wooliesHealthSentry.ts`'s `checkOnce()`: `result.isError` is checked
+    explicitly first and treated as `accountToolsUsable: false` (using the
+    error text itself as `hint`) before ever attempting to parse it as
+    JSON; a malformed-but-not-error response is now also caught and treated
+    the same way, rather than crashing. A genuine connection/protocol
+    throw (e.g. `fetch failed`) still falls through to the outer catch and
+    is logged-and-skipped without alerting, unchanged — that shape is a
+    separate, real, recurring transient network blip (most days, roughly
+    11:00-15:00 UTC) that self-resolves and shouldn't page anyone by
+    itself. Verified live before deploying: re-running the fixed
+    parsing logic against the real (still-dead) account resolved cleanly to
+    `{ accountToolsUsable: false, hint: "auth_status failed: ...
+    AUTH_NOT_AUTHENTICATED..." }` with no crash — confirming the very next
+    scheduled check (or container restart) will correctly detect the
+    `true → false` transition and post the real alert.
 - **"Never tracked" item alerting.** Now buildable — staples-host is real.
   Mechanism: a periodic (every 6h) direct host-side call to staples-host's
   `list_staples()`, filtered to items with a restock rate set (`learned` or

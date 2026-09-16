@@ -3,7 +3,7 @@ import { AUTH_ALERT_REPEAT_MS, AUTH_CHECK_INTERVAL_MS, DATA_DIR, WOOLIES_MCP_URL
 import { sendChannelMessage } from "./discord.js";
 import { loadJson, saveJson } from "./jsonStore.js";
 import { logger } from "./logger.js";
-import { callTool, toolResultJson } from "./mcpClient.js";
+import { callTool, toolResultJson, toolResultText } from "./mcpClient.js";
 
 const STATE_FILE = path.join(DATA_DIR, "woolies-health-state.json");
 
@@ -30,8 +30,34 @@ async function checkOnce(): Promise<void> {
   let status: AuthStatusResult;
   try {
     const result = await callTool("discordbot-woolies-health", WOOLIES_MCP_URL, "auth_status", {});
-    status = toolResultJson<AuthStatusResult>(result);
+    // A dead Woolworths session surfaces as a tool-level error (isError:
+    // true, plain-text GraphQL message like "...AUTH_NOT_AUTHENTICATED"),
+    // not as a well-formed { accountToolsUsable: false, ... } JSON body --
+    // confirmed live against the real account. Parsing that text as JSON
+    // (the previous behavior) throws a SyntaxError that landed in the catch
+    // below, which silently logged and returned -- this is exactly the
+    // "auth expired" case the alert exists for, and it was being treated
+    // identically to a transient network hiccup. Handle it explicitly as a
+    // real auth failure instead of letting JSON.parse crash it.
+    if (result.isError) {
+      status = {
+        accountToolsUsable: false,
+        hint: toolResultText(result) || "auth_status call returned an error",
+      };
+    } else {
+      try {
+        status = toolResultJson<AuthStatusResult>(result);
+      } catch (parseErr) {
+        status = {
+          accountToolsUsable: false,
+          hint: `auth_status returned an unparseable response: ${toolResultText(result)}`,
+        };
+      }
+    }
   } catch (err) {
+    // A genuine connection/protocol failure (e.g. "fetch failed") -- still
+    // logged and skipped, not alerted on, same as before: this is the
+    // transient-network-blip shape, distinct from an auth failure.
     logger.error("auth_status check failed", { err: String(err) });
     return;
   }
