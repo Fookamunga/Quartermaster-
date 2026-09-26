@@ -17,6 +17,12 @@ export type ItemStatus = "not_due" | "due" | "overdue";
 export interface Item {
   item_id: string;
   name: string;
+  // Other strings this staple should also be recognized by -- brand names
+  // and retailer synonyms that share no words with `name`, e.g. "sorbent"
+  // and "bath tissue" for "toilet paper". See fuzzy.ts's matchTargets for
+  // why a purely lexical matcher needs them. Always an array; items stored
+  // before this field existed are backfilled to [] on load (storage.ts).
+  aliases: string[];
   sku: string | null;
   replenishment_interval_days: number | null;
   interval_confidence: IntervalConfidence;

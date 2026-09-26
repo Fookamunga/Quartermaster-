@@ -46,6 +46,7 @@ export function registerListStaples(server: McpServer): void {
           const lastPurchaseQuantity = eventsForItem[0]?.quantity ?? null;
           return {
             name: item.name,
+            aliases: item.aliases,
             status: computeStatus(item, eventsForItem.length, lastPurchaseQuantity),
             last_purchased: item.last_purchased,
             replenishment_interval_days: item.replenishment_interval_days,

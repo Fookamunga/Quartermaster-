@@ -2,7 +2,18 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DATA_DIR, DB_PATH } from "./config.js";
+import { normalizeAliases } from "./fuzzy.js";
 import type { Database, Item, PurchaseEvent } from "./types.js";
+
+/**
+ * Backfills fields added to Item after existing rows were written.
+ * `aliases` shipped well after the initial staples list, so every item
+ * stored before it lacks the field entirely -- defaulting it once here means
+ * no lookup path downstream has to guard for undefined.
+ */
+function normalizeItem(item: Item): Item {
+  return { ...item, aliases: normalizeAliases(item.aliases ?? []) };
+}
 
 function emptyDb(): Database {
   return {
@@ -24,7 +35,7 @@ async function loadDb(): Promise<Database> {
     const raw = await readFile(DB_PATH, "utf8");
     const parsed = JSON.parse(raw) as Partial<Database>;
     return {
-      items: parsed.items ?? [],
+      items: (parsed.items ?? []).map(normalizeItem),
       purchase_events: parsed.purchase_events ?? [],
       lastWeeklyReportSentAt: parsed.lastWeeklyReportSentAt ?? null,
       lastPurchaseHistorySyncedAt: parsed.lastPurchaseHistorySyncedAt ?? null,
