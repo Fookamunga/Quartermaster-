@@ -1,3 +1,5 @@
+import { WOOLWORTHS_ORDERING_CHANNEL_NAME } from "./config.js";
+
 // Shared shape/formatting for staples-host's ingest_receipt and
 // ingest_order_text results -- both return matched/unmatched line items in
 // the same shape, so #order-import's photo and text relays share this
@@ -26,7 +28,16 @@ export function formatIngestResult(result: IngestResult): string {
     for (const m of result.already_recorded) lines.push(`• ${m.item_name} (from "${m.line}")`);
   }
   if (result.unmatched.length > 0) {
-    lines.push("Unmatched — no matching staple found, add it manually via Craft if it should be tracked:");
+    // Craft was removed entirely (see CLAUDE.md); item management is
+    // conversational via staples-host's add_staple/update_staple. Those
+    // are NOT reachable from this channel -- #order-import is a pure
+    // relay with no agent behind it -- so the message has to name where
+    // they can actually be run, or it sends the reader nowhere.
+    lines.push(
+      "Unmatched — no matching staple found. To track one of these, ask in " +
+        `#${WOOLWORTHS_ORDERING_CHANNEL_NAME} (or via the Claude.ai connector) ` +
+        "to add it as a staple, or to add an alias for it to an existing staple:",
+    );
     for (const line of result.unmatched) lines.push(`• ${line}`);
   }
   if (lines.length === 0) {

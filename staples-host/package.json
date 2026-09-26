@@ -2,7 +2,7 @@
   "name": "staples-host",
   "version": "0.1.0",
   "private": true,
-  "description": "MCP server owning the grocery staples list, purchase-event log, and Craft sync for Quartermaster.",
+  "description": "MCP server owning the grocery staples list and purchase-event log for Quartermaster.",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

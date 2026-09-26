@@ -18,8 +18,8 @@ export function registerAddStaple(server: McpServer): void {
       description:
         "Add a new staple to track. interval_days is optional -- if " +
         "omitted, the item starts with no restock rate at all (the same " +
-        "'not enough data yet' state as a fresh Craft-synced item used to " +
-        "start in), eligible to learn one automatically once enough real " +
+        "'not enough data yet' state a fresh item has always started in), " +
+        "eligible to learn one automatically once enough real " +
         "purchase history exists. If given, the restock rate is marked " +
         "'manual' and is never silently overwritten by a learned value, " +
         "even once enough history exists to compute one -- see " +

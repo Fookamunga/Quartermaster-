@@ -34,8 +34,8 @@ function saveState(state: SentryState): void {
 
 /**
  * Items with an interval (seeded or learned) but no last_purchased anchor --
- * exactly the Craft doc's "❔ Never tracked" category, never "❔ Not enough
- * data yet" (no interval at all). Checks replenishment_interval_days != null
+ * the "never tracked" category, as distinct from "not enough data yet" (no
+ * interval at all). Checks replenishment_interval_days != null
  * explicitly rather than trusting status alone, so this stays correct even
  * if status's derivation changes elsewhere -- no-interval items must never
  * trigger a Discord alert under any sentry. See CLAUDE.md.
