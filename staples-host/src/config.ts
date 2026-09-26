@@ -17,6 +17,10 @@ export const DATA_DIR = process.env.DATA_DIR
 
 export const DB_PATH = path.join(DATA_DIR, "db.json");
 
+// Weekly recipe plan. A separate file from db.json on purpose -- see the
+// storage note in recipes.ts.
+export const RECIPES_PATH = path.join(DATA_DIR, "recipes.json");
+
 export const PORT = process.env.PORT ? Number(process.env.PORT) : 8481;
 
 // Secret path segment required on the /mcp/<token> route. ALLOWED_HOSTS below

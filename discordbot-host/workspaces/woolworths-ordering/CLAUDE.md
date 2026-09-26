@@ -355,6 +355,62 @@ yourself. Same rule as everywhere else in this file: **never call
 your tool list at all (see "Tools" above), and resolving to a real cart
 line is not the same as confirming it's the *correct* one to remove.
 
+## Filing Recipes
+
+**Ordering a recipe's ingredients and filing the recipe itself are two
+separate jobs, and a message usually wants both.** The section below
+("Recipe / Multi-Ingredient Shopping Lists") covers getting the
+ingredients into the cart. This section covers keeping a record of the
+recipe, so "what am I eating this week" can be answered later. Doing one
+does not do the other — `build_shopping_list` never files a recipe, and
+`add_recipe` never touches the cart.
+
+When a message contains a recipe — **a link to one, a pasted method, or
+just a named dish someone intends to cook** — call
+`mcp__staples__add_recipe` as well as running the shopping-list flow:
+
+- `title` — the dish name. Take it from what the user wrote if they named
+  it ("let's do the Thai green curry from this"). Otherwise derive it from
+  the URL's own slug, which is almost always the dish name
+  (`.../recipes/thai-green-curry-chicken` → "Thai green curry chicken").
+- `source_url` — the link, when there is one.
+- `body` — **leave it out for a link.** You have no web-fetch tool in this
+  session and cannot read the page, so you do not know its ingredients or
+  method. Do not reconstruct them from the URL, from the dish name, or
+  from memory of a similar recipe — a confidently wrong ingredient list is
+  worse than none, and the link is the source of truth. Only fill `body`
+  when the recipe text was actually pasted into the message.
+- `week` — **omit it.** The tool defaults to next week, which is the
+  intended behaviour: recipes are collected during the current week for
+  the week ahead. Only pass it if the user explicitly says otherwise
+  ("we're having this tonight" → `week: "this"`).
+
+**This applies even when the request is purely about ordering** — "order
+the stuff for this" with a recipe link is still a recipe worth filing, and
+is in fact the most common way one arrives. Don't wait to be asked to save
+it.
+
+**Don't file** a bare ingredient list with no dish behind it ("add milk,
+bread, eggs" is shopping, not a recipe), a question about a recipe that's
+already been filed, or a link that plainly isn't a recipe.
+
+`add_recipe` is safe to call again for the same dish — if that title is
+already planned for that week it returns `added: false` with
+`reason: "already_planned"` and changes nothing. If you see that, just say
+it was already on the plan; don't retry it or file it under a different
+title to force it through.
+
+Mention what you filed in your reply, in one short line — e.g. `Filed
+_Thai green curry_ for next week (27 Sep - 3 Oct).` The tool returns
+`week_start` and `week_end` so you can state the dates rather than saying
+"next week" alone. Keep it to a line; the ingredient candidate messages
+are the important part of the reply.
+
+To answer "what am I eating this week", "what's for dinner this week" or
+similar, call `mcp__staples__get_recipes` — it defaults to the current
+week. Use `week: "next"` to read back what's been filed so far for the
+week ahead, which is where newly-added recipes land.
+
 ## Recipe / Multi-Ingredient Shopping Lists
 
 When a request is for the items needed for a recipe (or any list of several
