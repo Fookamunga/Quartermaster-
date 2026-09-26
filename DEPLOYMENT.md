@@ -43,13 +43,16 @@ dev environment:
   Desktop's remote access, not tied to Nick's own NAS login)
 - Passwordless SSH keypair: `D:\docker\.ssh\claude_nas_key` (private) /
   `claude_nas_key.pub` (added to the `claude` user's `authorized_keys` on the NAS)
-- Recommended: add a matching alias to `D:\docker\.ssh\config` so commands can just
-  use `ssh nas` instead of the full path/user/host each time:
+- The `nas` alias is configured — `ssh nas` works as-is, no key path or user needed.
+  Gotcha: `D:\docker\.ssh\config` and `%USERPROFILE%\.ssh\config` are two separate
+  files with identical content, and `ssh` only reads the latter by default. The alias
+  was added to both; keep them in sync if either is edited.
   ```
   Host nas
       HostName 192.168.50.205
       User claude
       IdentityFile D:\docker\.ssh\claude_nas_key
+      IdentitiesOnly yes
   ```
 - Access is broad (full SSH, not just Docker-socket-scoped) — there's nothing on
   this NAS considered irreplaceable, so this was set up deliberately permissive.
@@ -65,20 +68,108 @@ dev environment:
   actual Docker daemon. If discordbot-host's rebuild still needs to run Claude Code
   *from inside a NAS-side container* for any reason, follow the same pattern —
   don't attempt a native DSM install.
-- Ordinary `docker build` / `docker compose` over SSH (i.e., not going through DSM's
-  Container Manager GUI) should work fine — the broken part was specifically the
-  native npm/Claude Code install path, not Docker itself. Worth confirming Docker
-  CLI access over the `claude` SSH session works cleanly before assuming the deploy
-  step is friction-free.
+- Docker CLI over SSH is **confirmed working** (2026-09-20), with two wrinkles the
+  deploy steps need to account for:
+  - `docker` is **not on `claude`'s PATH** — it lives at `/usr/local/bin/docker`
+    (a symlink into `/var/packages/ContainerManager/target/usr/bin/docker`). Use the
+    full path in scripts rather than relying on PATH.
+  - `/var/run/docker.sock` is `root:root 0660`, so `claude` **cannot reach the daemon
+    directly** — every Docker command needs `sudo`. Passwordless `sudo` is configured
+    (`claude` is in the `administrators` group), so `sudo -n` works non-interactively.
+
+  Working invocation: `ssh nas 'sudo -n /usr/local/bin/docker ps'`
+- Deploy path convention on the NAS (as currently deployed):
+  - code: `/volume1/docker/quartermaster/<service>`
+  - persistent state: `/volume1/docker/quartermaster-data/<service>` (mounted in, not
+    baked into images — keeps the possible VPS migration cheap)
 - Existing containers on the NAS for reference/context (do not touch woolies-mcp):
   - `woolies-mcp` — at whatever path it was deployed to via Container Manager;
     exposed via Tailscale Funnel on the standard port 443 (its own container
     listens locally on port 8480; Funnel proxies `/` on 443 to it).
-  - `nanoclaw-host` — was at `/volume1/docker/nanoclaw-host`; being replaced by the
-    rebuilt discordbot-host per CLAUDE.md. Fine to inspect for reference before
-    removing/replacing.
+  - `staples-host` — running; listens on `127.0.0.1:8481`, exposed via the `/staples`
+    Funnel path (see Networking). Mounts its `.env` from
+    `/volume1/docker/quartermaster/staples-host/.env`.
+  - `discordbot-host` — running; the rebuilt replacement for nanoclaw-host. Has
+    `/var/run/docker.sock` mounted in, per the container-side Claude Code pattern above.
+  - `claude-ssh` — `linuxserver/openssh-server`, at `/volume1/docker/claude-ssh`.
+    Publishes **port 2222 on all interfaces** and mounts both `/volume1/docker` (as
+    `/workspace`) and `/var/run/docker.sock`. Not part of Quartermaster, but it is a
+    second, broader SSH path onto the NAS — worth knowing about before assuming the
+    `claude` user's key is the only access route.
+  - `nanoclaw-watchdog` — running, `/var/run/docker.sock` mounted. Left over from the
+    nanoclaw era; its role relative to discordbot-host is undocumented. Check what it
+    is actually doing before removing it.
+  - `nanoclaw-host` — stopped (exited 2 weeks ago), not removed. Superseded by
+    discordbot-host. Fine to inspect for reference before deleting.
   - `claude-discord` — the original abandoned attempt, was at
     `/volume1/docker/claude-discord`; already fully removed, nothing to reference.
+  - Also stopped and unreferenced: `nanoclaw-warm-woolworths-ordering`,
+    `wonderful_jennings`, `nice_vaughan`.
+
+## Claude Code auth for discordbot-host
+
+discordbot-host needs Claude credentials for both of its agent paths: the
+warm session runs the Agent SDK in its own process, and the cold path
+filters the same vars into each ephemeral container's env-dir mount
+(`containerRunner.ts`'s `allowedVars`). `.env.example` is right that it's
+**exactly one of** `CLAUDE_CODE_OAUTH_TOKEN` (a subscription) or
+`ANTHROPIC_API_KEY` (pay-per-token) -- don't leave both set, even
+commented, since a stale one is a trap.
+
+### Minting an OAuth token
+
+Confirmed working 2026-09-27. Run these on the PC, not the NAS -- they're
+interactive browser sign-in flows, and a native Claude Code install on DSM
+is broken anyway (see the Docker quirks above):
+
+```
+claude auth login     # sign in as the account whose subscription should pay
+claude auth status    # confirm it took the account you meant
+claude setup-token    # prints the long-lived token
+```
+
+Paste the result into `CLAUDE_CODE_OAUTH_TOKEN=` in the NAS's
+`/volume1/docker/quartermaster/discordbot-host/.env`, then **restart the
+container -- no rebuild needed**. `config.ts` calls `process.loadEnvFile()`
+against the bind-mounted working directory, so the file is read fresh at
+every start. An OAuth token has an `sk-ant-oat01-` prefix, distinguishing
+it at a glance from an `sk-ant-api03-` API key.
+
+### The failure mode that isn't a bug
+
+An Anthropic **organization** setting can disable Claude subscription
+access for Claude Code, which kills `CLAUDE_CODE_OAUTH_TOKEN` outright
+while leaving everything else working. Confirmed live: the bot replied into
+Discord with *"Your organization has disabled Claude subscription access
+for Claude Code"*. Note the shape -- it is **not** a crash. The SDK starts
+normally (`Warm session initialized`), the API refuses the request, and the
+refusal text is relayed as the reply (`Reply sent`), so the logs look
+healthy and the error only appears in Discord. Don't hunt for a code bug.
+
+Fixes, in order of preference: re-enable the org setting, or sign in as an
+account that has it enabled and mint a fresh token. An `ANTHROPIC_API_KEY`
+also works and needs no code change, but bills per token, and the warm
+session runs a full agent turn for every message in the channel -- flat
+subscription billing is the cheaper shape for this workload.
+
+### Verifying a token change
+
+**Only a real Discord message proves it.** Two things that look like
+verification but aren't:
+
+- `docker exec discordbot-host printenv CLAUDE_CODE_OAUTH_TOKEN` returns
+  empty even when the token is loaded correctly -- `loadEnvFile()`
+  populates the Node process's in-memory `process.env`, not the container's
+  OS environment.
+- A clean startup proves nothing about auth. The SDK's streaming generator
+  produces no messages until a prompt is written to it, and the health
+  check that does deliver a prompt only runs on the *restart* path, never
+  at boot (see `warmSession.ts`'s header comment -- this is deliberate).
+
+So post a real request in `#woolworths-ordering` and watch for
+`Warm session initialized` -> `Reply sent`, then the
+`Candidate options posted` / `Candidate reaction confirmed` pair if you
+react -- that last pair exercises the whole chain including the cart write.
 
 ## Networking
 
