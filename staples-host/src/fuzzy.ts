@@ -291,6 +291,73 @@ const MIN_QUERY_TO_NAME_LENGTH_RATIO = 0.5;
  * against "Olive oil") is exactly the shape of false positive neither the
  * threshold alone nor Fuse's internal gating catches.
  */
+/**
+ * How close the query must be to a single word of a staple name to be
+ * accepted despite failing MIN_QUERY_TO_NAME_LENGTH_RATIO, as a fraction of
+ * the longer of the two (1 = identical). 0.8 is the value that separates
+ * the real cases: "nutragrain" vs "Nutrigrain" is one substitution in ten
+ * characters (0.90, accept), while "lime" vs "Olive" is two edits in five
+ * (0.60, reject) -- the exact false positive MIN_QUERY_TO_NAME_LENGTH_RATIO
+ * exists to stop. Evidence-based like every other constant here; revisit it
+ * only against real data.
+ */
+const WORD_SIMILARITY_THRESHOLD = 0.8;
+
+/**
+ * Shortest query allowed to use the word-similarity escape hatch. Below
+ * this, one or two edits is most of the string and near-anything looks like
+ * a match -- "sos" would reach "Soy" at 0.67 and "sod"/"soa" would do the
+ * same. Short queries stay governed by the length ratio alone.
+ */
+const MIN_WORD_SIMILARITY_QUERY_LENGTH = 4;
+
+/** Levenshtein distance, iterative two-row. */
+function editDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  let curr = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[b.length];
+}
+
+/**
+ * Does `query` read as a misspelling of one word inside `name`?
+ *
+ * The escape hatch for MIN_QUERY_TO_NAME_LENGTH_RATIO. That ratio assumes a
+ * query much shorter than the staple name means the two are unrelated,
+ * which holds for a generic name ("lime" vs "Olive oil") but breaks
+ * completely once a staple is named with brand plus variety plus size:
+ * "Nutrigrain high protein 500g" is 28 characters, so ANY brand-only query
+ * for it scores under 0.5 no matter how exact. Confirmed live -- a real
+ * "add nutragrain" resolved to a plain product search with no staple
+ * recognised, even though Fuse had scored it 0.316, comfortably inside
+ * FUZZY_MATCH_THRESHOLD. The spelling was the only reason it reached this
+ * pass at all: "nutrigrain" spelled correctly matches earlier, on the
+ * reverse whole-word pass.
+ *
+ * Compared per word rather than against the whole name, because the whole
+ * name is exactly what the length ratio already measured.
+ */
+function matchesNameWordClosely(query: string, name: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (q.length < MIN_WORD_SIMILARITY_QUERY_LENGTH) return false;
+  for (const word of name.toLowerCase().split(/\s+/)) {
+    if (word.length < MIN_WORD_SIMILARITY_QUERY_LENGTH) continue;
+    const similarity = 1 - editDistance(q, word) / Math.max(q.length, word.length);
+    if (similarity >= WORD_SIMILARITY_THRESHOLD) return true;
+  }
+  return false;
+}
+
 function findFuzzyFallbackMatch(items: Item[], query: string): Item | null {
   // Deliberately keyed on "name" only -- aliases take part in the exact and
   // whole-word passes above, but NOT in this edit-distance one. Adding them
@@ -309,8 +376,15 @@ function findFuzzyFallbackMatch(items: Item[], query: string): Item | null {
   if (!best || best.score == null) return null;
   if (best.score > FUZZY_MATCH_THRESHOLD) return null;
 
+  // The length ratio is the primary guard; the word-similarity check is a
+  // narrow escape hatch for a query that is a near-exact misspelling of one
+  // word of a long staple name. Deliberately applied AFTER the score gate
+  // above, so it can only ever rescue a match Fuse already scored as good --
+  // it widens what counts as close enough, never what counts as a match.
   const ratio = query.trim().length / best.item.name.length;
-  if (ratio < MIN_QUERY_TO_NAME_LENGTH_RATIO) return null;
+  if (ratio < MIN_QUERY_TO_NAME_LENGTH_RATIO && !matchesNameWordClosely(query, best.item.name)) {
+    return null;
+  }
 
   return best.item;
 }
