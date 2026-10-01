@@ -228,6 +228,15 @@ function startWarmSession(channelKey: ChannelKey): WarmSessionState {
     "Write",
     "Glob",
     "Grep",
+    // Recipes arrive as links. Without this the agent could file a recipe's
+    // title and URL but never its ingredients, so "order the stuff for this"
+    // dead-ended on asking the user to paste the ingredient list by hand --
+    // hit for real on the first recipe ever filed. Fetched pages are
+    // untrusted input; see the workspace CLAUDE.md's Filing Recipes section
+    // for the handling rule, and note the agent still cannot write to the
+    // cart (set_cart_quantity is denied; only a real human reaction writes),
+    // which is what keeps an injected "add X to the cart" inert.
+    "WebFetch",
     ...remoteServerNames.map((name) => `mcp__${name}__*`),
   ];
   const disallowedTools = remoteServerNames.includes("staples")
